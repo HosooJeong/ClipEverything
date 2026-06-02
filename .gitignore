@@ -1,0 +1,22 @@
+# Build outputs
+/build/
+/build_verify/
+/dist/
+*.obj
+*.res
+*.pdb
+*.ilk
+*.exe
+*.zip
+
+# Logs and generated build notes
+*.log
+build_result.txt
+
+# Local/editor noise
+.vs/
+.vscode/
+*.user
+*.suo
+*.tmp
+Thumbs.db
