@@ -354,8 +354,11 @@ static std::string ComputeFormatsHash(const std::vector<RawClipboardFormat>& for
     return sha.Finish();
 }
 
-// 클립보드 DIB는 다른 프로세스가 만든 비신뢰 데이터 — 헤더를 검증한 뒤 사용한다.
-static bool ValidateDib(const uint8_t* dibData, size_t dibSize, DWORD& pixelOffset)
+// 클립보드 DIB는 다른 프로세스가 만든 비신뢰 데이터 — 헤더를 검증하고
+// 검증된 치수로 계산한 픽셀 크기(pixelBytes)만큼만 복사한다.
+// 썸네일 용도이므로 비압축(BI_RGB/BI_BITFIELDS) 비트맵만 지원한다.
+static bool ValidateDib(const uint8_t* dibData, size_t dibSize,
+                        DWORD& pixelOffset, size_t& pixelBytes)
 {
     if (!dibData || dibSize < sizeof(BITMAPINFOHEADER))
         return false;
@@ -363,33 +366,61 @@ static bool ValidateDib(const uint8_t* dibData, size_t dibSize, DWORD& pixelOffs
     const BITMAPINFOHEADER* bih = reinterpret_cast<const BITMAPINFOHEADER*>(dibData);
     if (bih->biSize < sizeof(BITMAPINFOHEADER) || bih->biSize > dibSize)
         return false;
+    if (bih->biPlanes != 1)
+        return false;
     if (bih->biWidth <= 0 || bih->biWidth > 32768 ||
         bih->biHeight == 0 || bih->biHeight > 32768 || bih->biHeight < -32768)
         return false;
-    if (bih->biBitCount > 32)
+
+    switch (bih->biBitCount) {
+        case 1: case 4: case 8: case 16: case 24: case 32:
+            break;
+        default:
+            return false;
+    }
+
+    if (bih->biCompression != BI_RGB && bih->biCompression != BI_BITFIELDS)
+        return false;
+    if (bih->biCompression == BI_BITFIELDS &&
+        bih->biBitCount != 16 && bih->biBitCount != 32)
         return false;
 
     uint64_t offset = bih->biSize;
     if (bih->biClrUsed > 0) {
         if (bih->biClrUsed > 256) return false;
         offset += static_cast<uint64_t>(bih->biClrUsed) * 4;
-    } else if (bih->biBitCount > 0 && bih->biBitCount <= 8) {
+    } else if (bih->biBitCount <= 8) {
         offset += (1ull << bih->biBitCount) * 4;
     }
-    if (bih->biCompression == BI_BITFIELDS)
+    // BI_BITFIELDS 마스크 3개(12바이트)는 BITMAPINFOHEADER(40바이트) 뒤에만
+    // 별도로 붙는다. V2/V3/V4/V5 등 더 큰 헤더는 마스크를 헤더 안에 포함한다.
+    if (bih->biCompression == BI_BITFIELDS && bih->biSize == sizeof(BITMAPINFOHEADER))
         offset += 12;
 
     if (offset >= dibSize)
         return false;
 
+    // DWORD 정렬 stride × 행 수 = CreateDIBSection이 할당하는 픽셀 버퍼 크기
+    const uint64_t stride =
+        ((static_cast<uint64_t>(bih->biWidth) * bih->biBitCount + 31) / 32) * 4;
+    const uint64_t rows = static_cast<uint64_t>(
+        bih->biHeight < 0 ? -static_cast<int64_t>(bih->biHeight) : bih->biHeight);
+    const uint64_t expected = stride * rows;
+
+    // 클립보드 데이터에 기대 크기만큼의 픽셀이 실제로 있어야 한다
+    if (expected == 0 || expected > dibSize - offset)
+        return false;
+
     pixelOffset = static_cast<DWORD>(offset);
+    pixelBytes = static_cast<size_t>(expected);
     return true;
 }
 
 static std::vector<uint8_t> MakeThumbnail(const uint8_t* dibData, size_t dibSize)
 {
     DWORD pixelOffset = 0;
-    if (!ValidateDib(dibData, dibSize, pixelOffset))
+    size_t pixelBytes = 0;
+    if (!ValidateDib(dibData, dibSize, pixelOffset, pixelBytes))
         return {};
 
     IWICImagingFactory* pFactory = nullptr;
@@ -409,7 +440,7 @@ static std::vector<uint8_t> MakeThumbnail(const uint8_t* dibData, size_t dibSize
         return {};
     }
 
-    memcpy(bits, dibData + pixelOffset, dibSize - pixelOffset);
+    memcpy(bits, dibData + pixelOffset, pixelBytes);
 
     IWICBitmap* pBitmap = nullptr;
     pFactory->CreateBitmapFromHBITMAP(hBmp, nullptr, WICBitmapUseAlpha, &pBitmap);

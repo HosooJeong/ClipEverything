@@ -124,9 +124,9 @@ bool Repository::Initialize()
     return true;
 }
 
-void Repository::Execute(const char* sql)
+bool Repository::Execute(const char* sql)
 {
-    sqlite3_exec(_db, sql, nullptr, nullptr, nullptr);
+    return sqlite3_exec(_db, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
 // ── 중복 감지 ────────────────────────────────────────────────
@@ -162,7 +162,8 @@ int64_t Repository::InsertItem(const ClipboardSnapshot& snap, const SourceInfo& 
     auto preview = ToUtf8(snap.previewText);
     sqlite3_bind_text(_stmtInsert, 9, preview.c_str(), -1, SQLITE_TRANSIENT);
 
-    sqlite3_step(_stmtInsert);
+    if (sqlite3_step(_stmtInsert) != SQLITE_DONE)
+        return 0;
     return sqlite3_last_insert_rowid(_db);
 }
 
@@ -194,29 +195,44 @@ int64_t Repository::SaveOrUpdate(const ClipboardSnapshot& snap, const SourceInfo
 
     std::string now = NowIso8601();
 
-    // 아이템 + 포맷 저장을 하나의 트랜잭션으로 (원자성 + fsync 1회)
-    Execute("BEGIN IMMEDIATE;");
+    // 아이템 + 포맷 저장을 하나의 트랜잭션으로 — 어느 단계든 실패하면
+    // ROLLBACK하여 포맷 없는 고아 아이템이 커밋되지 않게 한다.
+    if (!Execute("BEGIN IMMEDIATE;"))
+        return 0;
 
     int64_t itemId = InsertItem(snap, src, now);
+    bool ok = itemId > 0;
 
-    sqlite3_stmt* stmt = nullptr;
-    sqlite3_prepare_v2(_db,
-        "INSERT INTO ClipboardFormats (ItemId,FormatId,FormatName,Data) VALUES(?,?,?,?)",
-        -1, &stmt, nullptr);
-    for (auto& fmt : snap.formats) {
-        sqlite3_reset(stmt);
-        auto fname = ToUtf8(fmt.formatName);
-        sqlite3_bind_int64(stmt, 1, itemId);
-        sqlite3_bind_int64(stmt, 2, fmt.formatId);
-        sqlite3_bind_text (stmt, 3, fname.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_blob (stmt, 4, fmt.data.data(), (int)fmt.data.size(), SQLITE_TRANSIENT);
-        sqlite3_step(stmt);
+    if (ok) {
+        sqlite3_stmt* stmt = nullptr;
+        ok = sqlite3_prepare_v2(_db,
+            "INSERT INTO ClipboardFormats (ItemId,FormatId,FormatName,Data) VALUES(?,?,?,?)",
+            -1, &stmt, nullptr) == SQLITE_OK;
+        if (ok) {
+            for (auto& fmt : snap.formats) {
+                sqlite3_reset(stmt);
+                auto fname = ToUtf8(fmt.formatName);
+                sqlite3_bind_int64(stmt, 1, itemId);
+                sqlite3_bind_int64(stmt, 2, fmt.formatId);
+                sqlite3_bind_text (stmt, 3, fname.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_blob (stmt, 4, fmt.data.data(), (int)fmt.data.size(), SQLITE_TRANSIENT);
+                if (sqlite3_step(stmt) != SQLITE_DONE) {
+                    ok = false;
+                    break;
+                }
+            }
+            sqlite3_finalize(stmt);
+        }
     }
-    sqlite3_finalize(stmt);
 
-    EnforceRetentionLimit();
-
-    Execute("COMMIT;");
+    if (ok) {
+        EnforceRetentionLimit();
+        ok = Execute("COMMIT;");
+    }
+    if (!ok) {
+        Execute("ROLLBACK;");
+        return 0;
+    }
 
     return itemId;
 }

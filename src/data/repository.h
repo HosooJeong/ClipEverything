@@ -38,7 +38,7 @@ private:
     sqlite3_stmt* _stmtInsert   = nullptr;
     sqlite3_stmt* _stmtFindHash = nullptr;
 
-    void Execute(const char* sql);
+    bool Execute(const char* sql);
     int64_t FindByHash(const std::string& hash);
     int64_t InsertItem(const ClipboardSnapshot& snap, const SourceInfo& src, const std::string& now);
     void EnforceRetentionLimit();

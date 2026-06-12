@@ -78,8 +78,9 @@ void ClipboardService::OnCopyHotkey()
     }
     if (!snap) return;
 
-    // 5. DB 저장
+    // 5. DB 저장 (실패 시 0 — 트랜잭션이 롤백된 경우)
     int64_t itemId = _repo.SaveOrUpdate(*snap, src);
+    if (itemId <= 0) return;
 
     // 6. UI 알림
     if (OnItemCaptured) OnItemCaptured(itemId, src);
