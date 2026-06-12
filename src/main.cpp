@@ -220,6 +220,11 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         // 토스트 알림은 HostWndProc의 WM_APP_CLIP_SAVED에서 처리
         PostMessageW(hHost, WM_APP_CLIP_SAVED, (WPARAM)itemId, 0);
     };
+    clip.OnSensitiveSkipped = [&]() {
+        // 저장이 조용히 누락되면 혼란스러우므로 토스트 설정과 무관하게 안내
+        ShowToastMessage(hInst, L"저장하지 않음",
+                         L"민감 항목 신호가 있어 기록에서 제외했습니다.");
+    };
 
     // ── 12. 시작 시 팝업 열기 (자동 실행 모드가 아닐 때만)
     // 필요하면 주석 해제:

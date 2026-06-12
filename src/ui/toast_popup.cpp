@@ -158,7 +158,7 @@ bool RegisterToastClass(HINSTANCE hInst)
     return RegisterClassExW(&wc) != 0;
 }
 
-void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
+void ShowToastMessage(HINSTANCE hInst, const std::wstring& title, const std::wstring& subtitle)
 {
     // 기존 토스트 제거
     if (g_currentToast) { DestroyWindow(g_currentToast); g_currentToast = nullptr; }
@@ -170,8 +170,8 @@ void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
 
     auto* td = new ToastData();
     td->hInst    = hInst;
-    td->title    = item.sourceApp + L"에서 복사됨";
-    td->subtitle = item.DisplayName();
+    td->title    = title;
+    td->subtitle = subtitle;
     if (td->subtitle.length() > 45) td->subtitle = td->subtitle.substr(0, 42) + L"...";
 
     g_currentToast = CreateWindowExW(
@@ -181,4 +181,9 @@ void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
         nullptr, nullptr, hInst, td);
 
     if (g_currentToast) ShowWindow(g_currentToast, SW_SHOWNOACTIVATE);
+}
+
+void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
+{
+    ShowToastMessage(hInst, item.sourceApp + L"에서 복사됨", item.DisplayName());
 }

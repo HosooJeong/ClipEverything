@@ -49,14 +49,33 @@ void ClipboardService::OnCopyHotkey()
     // 2. Win/Ctrl 물리 키 해제 대기 후 Ctrl+C 시뮬레이션
     //    (SimulateCtrl 내부에서 먼저 LWin/Ctrl UP을 주입하지만,
     //     SendInput이 비동기이므로 20ms 여유를 준다)
+    const DWORD seqBefore = GetClipboardSequenceNumber();
     Sleep(20);
     SimulateCtrlC();
 
-    // 3. 클립보드 변경 대기
-    Sleep(100);
+    // 3. 클립보드가 실제로 갱신될 때까지 대기 (최대 500ms).
+    //    고정 대기는 느린 앱(Excel 대용량 범위 등)에서 이전 내용을 캡처하는
+    //    레이스가 있었음. 갱신이 없으면(선택 없음 등) 저장하지 않는다.
+    bool changed = false;
+    for (int i = 0; i < 50; ++i) {
+        Sleep(10);
+        if (GetClipboardSequenceNumber() != seqBefore) {
+            changed = true;
+            break;
+        }
+    }
+    if (!changed) return;
+
+    // 시퀀스가 바뀐 직후에도 일부 앱은 포맷을 추가 중일 수 있어 짧게 추가 대기
+    Sleep(30);
 
     // 4. 클립보드 스냅샷 (STA 메인 스레드에서 실행 중)
-    auto snap = TakeSnapshot();
+    bool excludedSensitive = false;
+    auto snap = TakeSnapshot(&excludedSensitive);
+    if (excludedSensitive) {
+        if (OnSensitiveSkipped) OnSensitiveSkipped();
+        return;
+    }
     if (!snap) return;
 
     // 5. DB 저장

@@ -77,11 +77,41 @@ struct SerializedPaletteHeader {
 
 static bool ShouldSkip(UINT fmt)
 {
+    // CF_BITMAP/CF_OEMTEXT는 CF_DIB/CF_TEXT에서 합성되는 포맷이라 원본만 저장
     switch (fmt) {
         case CF_BITMAP:
-        case CF_HDROP:
         case CF_OEMTEXT:
             return true;
+    }
+    return false;
+}
+
+// 비밀번호 매니저 등이 "클립보드 기록 도구는 저장하지 마라"고 알리는 표준 신호.
+// 클립보드가 이미 열린 상태에서 호출해야 한다.
+static bool HasSensitiveExclusionSignal()
+{
+    static const UINT fmtExclude =
+        RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+    static const UINT fmtIgnore =
+        RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
+    static const UINT fmtCanInclude =
+        RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+
+    if (IsClipboardFormatAvailable(fmtExclude) ||
+        IsClipboardFormatAvailable(fmtIgnore))
+        return true;
+
+    // CanIncludeInClipboardHistory: DWORD 0이면 기록 제외 요청
+    if (IsClipboardFormatAvailable(fmtCanInclude)) {
+        if (HANDLE hData = GetClipboardData(fmtCanInclude)) {
+            if (GlobalSize(hData) >= sizeof(DWORD)) {
+                if (auto* value = static_cast<const DWORD*>(GlobalLock(hData))) {
+                    const bool excluded = (*value == 0);
+                    GlobalUnlock(hData);
+                    return excluded;
+                }
+            }
+        }
     }
     return false;
 }
@@ -412,9 +442,17 @@ static ContentType DetectContentType(const std::vector<RawClipboardFormat>& fmts
 
 } // namespace
 
-std::optional<ClipboardSnapshot> TakeSnapshot()
+std::optional<ClipboardSnapshot> TakeSnapshot(bool* excludedSensitive)
 {
+    if (excludedSensitive) *excludedSensitive = false;
+
     if (!OpenClipboard(nullptr)) return std::nullopt;
+
+    if (HasSensitiveExclusionSignal()) {
+        CloseClipboard();
+        if (excludedSensitive) *excludedSensitive = true;
+        return std::nullopt;
+    }
 
     ClipboardSnapshot snap;
     std::vector<uint8_t> dibData;

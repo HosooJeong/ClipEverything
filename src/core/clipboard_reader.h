@@ -20,5 +20,7 @@ struct ClipboardSnapshot {
     std::vector<uint8_t> thumbnail; // 40x40 PNG (이미지 클립만)
 };
 
-// STA 스레드(메인 스레드)에서만 호출 가능
-std::optional<ClipboardSnapshot> TakeSnapshot();
+// STA 스레드(메인 스레드)에서만 호출 가능.
+// 비밀번호 매니저 등이 저장 제외 신호 포맷을 올린 경우 nullopt를 반환하고
+// excludedSensitive(전달 시)를 true로 설정한다.
+std::optional<ClipboardSnapshot> TakeSnapshot(bool* excludedSensitive = nullptr);
