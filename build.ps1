@@ -47,6 +47,7 @@ $clArgs = @(
     "$Src\core\source_detector.cpp",
     "$Src\data\repository.cpp",
     "$Src\services\app_settings.cpp",
+    "$Src\services\localization.cpp",
     "$Src\services\storage_paths.cpp",
     "$Src\services\clipboard_service.cpp",
     "$Src\services\startup_service.cpp",

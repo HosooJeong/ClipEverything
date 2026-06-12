@@ -1,6 +1,7 @@
 #include "overlay_window.h"
 
 #include "../services/app_settings.h"
+#include "../services/localization.h"
 #include "../resources/resource.h"
 #include "theme.h"
 #include "render/d2d_context.h"
@@ -70,7 +71,6 @@ constexpr wchar_t kGlyphFavorite[] = L"\uE735";
 constexpr wchar_t kGlyphFavoriteOutline[] = L"\uE734";
 constexpr wchar_t kGlyphDelete[] = L"\uE74D";
 constexpr wchar_t kGlyphClose[] = L"\uE711";
-constexpr wchar_t kTagAddLabel[] = L"+ 태그";
 
 struct TagChipLayout {
     D2D1_ROUNDED_RECT bounds{};
@@ -152,7 +152,7 @@ std::wstring GetOverlayTitle(const ClipboardItem& item)
     const std::wstring firstLine = TrimCopy(item.PreviewFirstLine());
     if (!firstLine.empty()) return firstLine;
 
-    return L"관리명 없음";
+    return Tr(Str::OverlayNoName);
 }
 
 std::wstring GetInlineRenamePrefill(const ClipboardItem& item)
@@ -349,7 +349,7 @@ CardLayout BuildCardLayout(const ClipboardItem& item,
     const float tagRowBottom = tagRowTop + kTagChipHeight * scale;
     auto& ctx = D2DContext::Get();
     auto* tagTf = ctx.GetTextFormat(kOverlayFontName, 10.0f * scale);
-    layout.tagAddText = kTagAddLabel;
+    layout.tagAddText = Tr(Str::OverlayTagAdd);
     const float addTextWidth = MeasureTextWidth(layout.tagAddText, tagTf);
     const float addChipWidth = kTagChipPadX * scale * 2.0f + addTextWidth;
     layout.tagAddBounds = {
@@ -745,7 +745,7 @@ void OverlayWindow::OnCreate()
     _hNameEditBrush = CreateSolidBrush(kInlineEditBgColor);
     _hTagEditBrush = CreateSolidBrush(kTagEditBgColor);
     SendMessageW(_hSearch, WM_SETFONT, reinterpret_cast<WPARAM>(_hSearchFont), TRUE);
-    SendMessageW(_hSearch, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(L"검색..."));
+    SendMessageW(_hSearch, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(Tr(Str::OverlaySearchHint)));
     SetWindowSubclass(_hSearch, EditSubclassProc, 0, reinterpret_cast<DWORD_PTR>(this));
 
     _hNamePanel = CreateWindowExW(
@@ -767,7 +767,7 @@ void OverlayWindow::OnCreate()
     wcscpy_s(nameLf.lfFaceName, kOverlayFontName);
     _hNameEditFont = CreateFontIndirectW(&nameLf);
     SendMessageW(_hNameEdit, WM_SETFONT, reinterpret_cast<WPARAM>(_hNameEditFont), TRUE);
-    SendMessageW(_hNameEdit, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(L"관리명 입력"));
+    SendMessageW(_hNameEdit, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(Tr(Str::OverlayNameHint)));
     SendMessageW(_hNameEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                  MAKELPARAM(MulDiv(4, _dpi, 96), MulDiv(4, _dpi, 96)));
     SetWindowTheme(_hNameEdit, L"", L"");
@@ -983,6 +983,9 @@ void OverlayWindow::ShowOverlay(const std::wstring& contextApp, int64_t editItem
     _confirmDeleteItemId = 0;
 
     SetWindowTextW(_hSearch, L"");
+    // 언어 설정이 바뀌었을 수 있으므로 플레이스홀더 갱신
+    SendMessageW(_hSearch, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(Tr(Str::OverlaySearchHint)));
+    SendMessageW(_hNameEdit, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(Tr(Str::OverlayNameHint)));
     LoadItems();
 
     const bool activate = (editItemId != 0);
@@ -1487,7 +1490,7 @@ void OverlayWindow::DrawCard(ID2D1HwndRenderTarget* rt,
         const DeleteConfirmLayout confirm = BuildDeleteConfirmLayout(x, y, w, h, scale);
 
         if (subTf) {
-            const std::wstring ask = L"삭제할까요?";
+            const std::wstring ask = Tr(Str::ConfirmAsk);
             const float askW = MeasureTextWidth(ask, subTf);
             const D2D1_RECT_F askRect = D2D1::RectF(
                 confirm.confirmBounds.rect.left - askW - 10.0f * scale,
@@ -1516,9 +1519,13 @@ void OverlayWindow::DrawCard(ID2D1HwndRenderTarget* rt,
         rt->DrawRoundedRectangle(confirm.cancelBounds, cardBorderBrush.Get(), 1.0f);
 
         if (tagTf) {
+            const wchar_t* deleteLabel = Tr(Str::ConfirmDeleteBtn);
+            const wchar_t* cancelLabel = Tr(Str::ConfirmCancelBtn);
             tagTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            rt->DrawTextW(L"삭제", 2, tagTf, confirm.confirmBounds.rect, confirmText.Get());
-            rt->DrawTextW(L"취소", 2, tagTf, confirm.cancelBounds.rect, textBrush.Get());
+            rt->DrawTextW(deleteLabel, static_cast<UINT32>(wcslen(deleteLabel)),
+                          tagTf, confirm.confirmBounds.rect, confirmText.Get());
+            rt->DrawTextW(cancelLabel, static_cast<UINT32>(wcslen(cancelLabel)),
+                          tagTf, confirm.cancelBounds.rect, textBrush.Get());
             tagTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
         return;
@@ -1675,8 +1682,9 @@ void OverlayWindow::OnPaint()
 
     auto* smallTf = ctx.GetTextFormat(kOverlayFontName, 10.0f * scale);
     if (smallTf) {
+        const wchar_t* toggleLabel = Tr(Str::OverlayToggleAll);
         smallTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        rt->DrawTextW(L"전체 포함", 5, smallTf,
+        rt->DrawTextW(toggleLabel, static_cast<UINT32>(wcslen(toggleLabel)), smallTf,
                       D2D1::RectF(toggleX, toggleY, toggleX + toggleW, toggleY + toggleH),
                       toggleTextBrush.Get());
         smallTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -1718,8 +1726,9 @@ void OverlayWindow::OnPaint()
     if (_items.empty()) {
         auto* hintTf = ctx.GetTextFormat(kOverlayFontName, 13.0f * scale);
         if (hintTf) {
+            const wchar_t* emptyLabel = Tr(Str::OverlayEmpty);
             hintTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-            rt->DrawTextW(L"클립보드 항목이 없습니다.", 13, hintTf,
+            rt->DrawTextW(emptyLabel, static_cast<UINT32>(wcslen(emptyLabel)), hintTf,
                           D2D1::RectF(0.0f, listTop + 40.0f * scale,
                                       static_cast<float>(w), listTop + 80.0f * scale),
                           subBrush.Get());
@@ -1744,21 +1753,25 @@ void OverlayWindow::OnPaint()
 
     auto* statusTf = ctx.GetTextFormat(kOverlayFontName, 11.0f * scale);
     if (statusTf) {
-        std::wstring status = L"총 " + std::to_wstring(_items.size()) + L"개";
+        std::wstring status = TrFmt(Str::OverlayCountFmt, std::to_wstring(_items.size()));
         if (!_contextApp.empty() && !_showAll)
             status += L"  (" + _contextApp + L")";
-        if (IsInlineRenameActive())
-            status += L"   관리명 입력  Enter 저장  Esc 취소";
-        else if (IsInlineTagActive())
-            status += L"   태그 입력  Enter 추가  Esc 취소";
-        else if (_confirmDeleteItemId != 0)
-            status += L"   항목 삭제 확인  Esc 취소";
-        else if (_hoverAction.type != ActionTarget::None && !GetHoverStatusText().empty()) {
+        if (IsInlineRenameActive()) {
+            status += L"   ";
+            status += Tr(Str::OverlayStatusRename);
+        } else if (IsInlineTagActive()) {
+            status += L"   ";
+            status += Tr(Str::OverlayStatusTag);
+        } else if (_confirmDeleteItemId != 0) {
+            status += L"   ";
+            status += Tr(Str::OverlayStatusDelete);
+        } else if (_hoverAction.type != ActionTarget::None && !GetHoverStatusText().empty()) {
             status += L"   ";
             status += GetHoverStatusText();
+        } else {
+            status += L"   ";
+            status += Tr(Str::OverlayStatusPaste);
         }
-        else
-            status += L"   Enter 붙여넣기";
 
         rt->DrawTextW(status.c_str(), static_cast<UINT32>(status.length()), statusTf,
                       D2D1::RectF(12.0f * scale, statusY,
@@ -1839,32 +1852,33 @@ std::wstring OverlayWindow::GetTooltipText(const ActionHit& hit) const
 {
     switch (hit.type) {
         case ActionTarget::ToggleAll:
-            return _showAll ? L"현재 앱만 보기" : L"전체 목록 보기";
+            return Tr(_showAll ? Str::TipShowCurrentOnly : Str::TipShowAll);
         case ActionTarget::Close:
-            return L"닫기";
+            return Tr(Str::TipClose);
         case ActionTarget::Rename:
-            return L"관리명 변경";
+            return Tr(Str::TipRename);
         case ActionTarget::Favorite:
             if (hit.cardIdx >= 0 && hit.cardIdx < static_cast<int>(_items.size()))
-                return _items[hit.cardIdx].isFavorite ? L"즐겨찾기 해제" : L"즐겨찾기 추가";
-            return L"즐겨찾기";
+                return Tr(_items[hit.cardIdx].isFavorite ? Str::TipFavoriteRemove
+                                                         : Str::TipFavoriteAdd);
+            return Tr(Str::TipFavorite);
         case ActionTarget::Delete:
-            return L"삭제";
+            return Tr(Str::TipDelete);
         case ActionTarget::ConfirmDelete:
-            return L"삭제 확정";
+            return Tr(Str::TipConfirmDelete);
         case ActionTarget::CancelDelete:
-            return L"삭제 취소";
+            return Tr(Str::TipCancelDelete);
         case ActionTarget::TagAdd:
-            return L"태그 추가";
+            return Tr(Str::TipTagAdd);
         case ActionTarget::TagRemove:
-            return L"태그 삭제";
+            return Tr(Str::TipTagRemove);
         case ActionTarget::TagChip:
             if (hit.cardIdx >= 0 && hit.cardIdx < static_cast<int>(_items.size())) {
                 const auto tags = ParseTags(_items[hit.cardIdx].tags);
                 if (hit.tagIdx >= 0 && hit.tagIdx < static_cast<int>(tags.size()))
-                    return L"태그 수정: " + tags[hit.tagIdx];
+                    return TrFmt(Str::TipTagEditFmt, tags[hit.tagIdx]);
             }
-            return L"태그 수정";
+            return Tr(Str::TipTagEdit);
         default:
             return L"";
     }
@@ -1874,27 +1888,28 @@ std::wstring OverlayWindow::GetHoverStatusText() const
 {
     switch (_hoverAction.type) {
         case ActionTarget::ToggleAll:
-            return _showAll ? L"현재 앱 목록만 보기" : L"전체 목록 보기";
+            return Tr(_showAll ? Str::HoverShowCurrentOnly : Str::HoverShowAll);
         case ActionTarget::Close:
-            return L"오버레이 닫기";
+            return Tr(Str::HoverCloseOverlay);
         case ActionTarget::Rename:
-            return L"관리명 변경";
+            return Tr(Str::TipRename);
         case ActionTarget::Favorite:
             if (_hoverAction.cardIdx >= 0 && _hoverAction.cardIdx < static_cast<int>(_items.size()))
-                return _items[_hoverAction.cardIdx].isFavorite ? L"즐겨찾기 해제" : L"즐겨찾기 추가";
-            return L"즐겨찾기";
+                return Tr(_items[_hoverAction.cardIdx].isFavorite ? Str::TipFavoriteRemove
+                                                                  : Str::TipFavoriteAdd);
+            return Tr(Str::TipFavorite);
         case ActionTarget::Delete:
-            return L"항목 삭제";
+            return Tr(Str::HoverDeleteItem);
         case ActionTarget::ConfirmDelete:
-            return L"이 항목을 영구 삭제";
+            return Tr(Str::HoverConfirmDelete);
         case ActionTarget::CancelDelete:
-            return L"삭제 취소";
+            return Tr(Str::TipCancelDelete);
         case ActionTarget::TagAdd:
-            return L"태그 추가";
+            return Tr(Str::TipTagAdd);
         case ActionTarget::TagChip:
-            return L"태그 수정";
+            return Tr(Str::TipTagEdit);
         case ActionTarget::TagRemove:
-            return L"태그 삭제";
+            return Tr(Str::TipTagRemove);
         default:
             return L"";
     }

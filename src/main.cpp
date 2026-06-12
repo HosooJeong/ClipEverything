@@ -10,6 +10,7 @@
 #include "core/hotkey_manager.h"
 #include "data/repository.h"
 #include "services/app_settings.h"
+#include "services/localization.h"
 #include "services/startup_service.h"
 #include "services/tray_service.h"
 #include "services/clipboard_service.h"
@@ -122,18 +123,19 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     // ── 3. COM STA 초기화 (클립보드 API 사용 전 필수)
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
-    // ── 4. Direct2D / WIC / DirectWrite 초기화
+    // ── 4. 설정 로드 + 표시 언어 결정 (이후 모든 UI 문자열에 적용)
+    AppSettings  settings = AppSettings::Load();
+    SetAppLanguage(ParseLanguageSetting(settings.language));
+
+    // ── 5. Direct2D / WIC / DirectWrite 초기화
     if (!D2DContext::Get().Initialize()) {
-        MessageBoxW(nullptr, L"Direct2D 초기화에 실패했습니다.", L"오류", MB_ICONERROR);
+        MessageBoxW(nullptr, Tr(Str::ErrorD2DInit), Tr(Str::ErrorTitle), MB_ICONERROR);
         return 1;
     }
 
-    // ── 5. 서비스 인스턴스 생성
-    AppSettings  settings = AppSettings::Load();
-
     Repository   repo;
     if (!repo.Initialize()) {
-        MessageBoxW(nullptr, L"데이터베이스 초기화에 실패했습니다.", L"오류", MB_ICONERROR);
+        MessageBoxW(nullptr, Tr(Str::ErrorDbInit), Tr(Str::ErrorTitle), MB_ICONERROR);
         return 1;
     }
 
@@ -162,7 +164,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
                                   0, 0, 0, 0, 0,
                                   HWND_MESSAGE, nullptr, hInst, nullptr);
     if (!hHost) {
-        MessageBoxW(nullptr, L"호스트 창 생성에 실패했습니다.", L"오류", MB_ICONERROR);
+        MessageBoxW(nullptr, Tr(Str::ErrorHostWindow), Tr(Str::ErrorTitle), MB_ICONERROR);
         return 1;
     }
 
@@ -195,8 +197,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     // ── 10. 단축키 초기화
     hotkeys.OnCopyHotkey  = [&]() { clip.OnCopyHotkey();  };
     hotkeys.OnPasteHotkey = [&]() { clip.OnPasteHotkey(); };
-    hotkeys.OnConflict = [&](const std::wstring& msg) {
-        tray.ShowBalloon(L"단축키 충돌", msg);
+    hotkeys.OnConflict = [&](const std::wstring& labels) {
+        tray.ShowBalloon(Tr(Str::HotkeyConflictTitle),
+                         TrFmt(Str::HotkeyConflictMsgFmt, labels));
     };
 
     HotkeyConfig hkCfg;
@@ -223,8 +226,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     };
     clip.OnSensitiveSkipped = [&]() {
         // 저장이 조용히 누락되면 혼란스러우므로 토스트 설정과 무관하게 안내
-        ShowToastMessage(hInst, L"저장하지 않음",
-                         L"민감 항목 신호가 있어 기록에서 제외했습니다.");
+        ShowToastMessage(hInst, Tr(Str::ToastNotSavedTitle), Tr(Str::ToastNotSavedSub));
     };
 
     // ── 12. 시작 시 팝업 열기 (자동 실행 모드가 아닐 때만)

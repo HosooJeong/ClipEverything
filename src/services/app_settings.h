@@ -7,6 +7,7 @@ struct AppSettings {
     bool showToastNotifications = true;
     bool openOverlayAfterCopy   = true;  // 복사 핫키 직후 오버레이를 열고 이름 입력
     bool runAtStartup           = false;
+    std::wstring language       = L"system"; // "system" | "ko" | "en"
     UINT copyMods   = MOD_WIN | MOD_CONTROL | MOD_NOREPEAT;
     UINT copyVk     = 'C';
     UINT pasteMods  = MOD_WIN | MOD_CONTROL | MOD_NOREPEAT;

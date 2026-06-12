@@ -29,6 +29,7 @@ This is not a polished finished product yet. It is a working prototype that I am
 - Local SQLite storage
 - Overlay UI for searching, selecting, and pasting clips
 - Rename, favorite, and tag editing for saved items
+- Korean and English UI (follows the system language by default, switchable in Settings)
 - System tray menu
 - Startup registration
 - Scripts for portable packages and a simple installer

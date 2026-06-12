@@ -1,5 +1,6 @@
 #include "toast_popup.h"
 #include "../resources/resource.h"
+#include "../services/localization.h"
 #include "theme.h"
 #include "render/d2d_context.h"
 #include <d2d1.h>
@@ -185,5 +186,6 @@ void ShowToastMessage(HINSTANCE hInst, const std::wstring& title, const std::wst
 
 void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
 {
-    ShowToastMessage(hInst, item.sourceApp + L"에서 복사됨", item.DisplayName());
+    ShowToastMessage(hInst, TrFmt(Str::ToastCopiedFromFmt, item.sourceApp),
+                     item.DisplayName());
 }

@@ -20,6 +20,7 @@
 #define IDC_RESET_COPY          408
 #define IDC_RESET_PASTE         409
 #define IDC_OPEN_OVERLAY_CHECK  410
+#define IDC_LANGUAGE_COMBO      411
 
 // 사용자 메시지
 #define WM_APP_TRAY             (WM_APP + 1)   // 0x8001 - 트레이 콜백
