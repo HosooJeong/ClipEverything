@@ -283,6 +283,50 @@ static std::optional<std::string> ComputeFileDropHash()
     return ComputeSha256(joined.data(), joined.size() * sizeof(wchar_t));
 }
 
+// CF_UNICODETEXT 데이터에서 nul 종료 전까지의 텍스트를 돌려준다.
+static std::wstring GetUnicodeText(const std::vector<RawClipboardFormat>& fmts)
+{
+    for (const auto& f : fmts) {
+        if (f.formatId != CF_UNICODETEXT) continue;
+        if (f.data.size() < sizeof(wchar_t)) return {};
+
+        const wchar_t* chars = reinterpret_cast<const wchar_t*>(f.data.data());
+        const size_t maxChars = f.data.size() / sizeof(wchar_t);
+        size_t len = 0;
+        while (len < maxChars && chars[len] != L'\0') ++len;
+        return std::wstring(chars, len);
+    }
+    return {};
+}
+
+static std::wstring MakePreviewText(const std::wstring& text)
+{
+    constexpr size_t kMaxPreview = 512;
+
+    const size_t start = text.find_first_not_of(L" \t\r\n");
+    if (start == std::wstring::npos) return {};
+
+    std::wstring preview = text.substr(start, kMaxPreview);
+    const size_t end = preview.find_last_not_of(L" \t\r\n");
+    if (end != std::wstring::npos) preview.resize(end + 1);
+    return preview;
+}
+
+// 텍스트 클립은 텍스트만으로 해시 — 서식·로캘 등 부수 포맷 차이로
+// 같은 내용이 중복 저장되는 것을 막는다.
+static std::string ComputeTextHash(const std::wstring& text)
+{
+    Sha256State sha;
+    if (!sha.valid) return {};
+
+    static constexpr char kPrefix[] = "unicode-text\n";
+    if (!sha.Update(kPrefix, sizeof(kPrefix) - 1)) return {};
+    if (!text.empty() &&
+        !sha.Update(text.data(), text.size() * sizeof(wchar_t)))
+        return {};
+    return sha.Finish();
+}
+
 static std::string ComputeFormatsHash(const std::vector<RawClipboardFormat>& formats)
 {
     Sha256State sha;
@@ -499,8 +543,18 @@ std::optional<ClipboardSnapshot> TakeSnapshot(bool* excludedSensitive)
 
     if (snap.formats.empty()) return std::nullopt;
 
+    const std::wstring unicodeText = GetUnicodeText(snap.formats);
+    snap.previewText = MakePreviewText(unicodeText);
+
+    // 해시 우선순위: 파일 목록 > 텍스트 내용 > 전체 포맷 바이트
+    std::string textHash;
+    if (!unicodeText.empty())
+        textHash = ComputeTextHash(unicodeText);
+
     if (fileDropHash && !fileDropHash->empty()) {
         snap.contentHash = *fileDropHash;
+    } else if (!textHash.empty()) {
+        snap.contentHash = textHash;
     } else {
         snap.contentHash = ComputeFormatsHash(snap.formats);
     }

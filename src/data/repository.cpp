@@ -88,7 +88,8 @@ bool Repository::Initialize()
             IsFavorite      INTEGER NOT NULL DEFAULT 0,
             CreatedAt       TEXT NOT NULL,
             LastCopiedAt    TEXT NOT NULL,
-            Thumbnail       BLOB
+            Thumbnail       BLOB,
+            PreviewText     TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS ClipboardFormats (
             Id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,6 +105,9 @@ bool Repository::Initialize()
         CREATE INDEX IF NOT EXISTS idx_formats_item  ON ClipboardFormats(ItemId);
     )");
 
+    // 기존 DB 마이그레이션: 컬럼이 이미 있으면 에러가 나지만 Execute가 무시한다
+    Execute("ALTER TABLE ClipboardItems ADD COLUMN PreviewText TEXT NOT NULL DEFAULT '';");
+
     // Prepared statement 사전 컴파일
     sqlite3_prepare_v2(_db,
         "SELECT Id FROM ClipboardItems WHERE ContentHash=? LIMIT 1",
@@ -113,8 +117,8 @@ bool Repository::Initialize()
         INSERT INTO ClipboardItems
             (Name, SourceApp, SourceWindow, ExecutablePath,
              ContentHash, ContentType, Tags, IsFavorite,
-             CreatedAt, LastCopiedAt, Thumbnail)
-        VALUES (NULL,?,?,?,?,?,''  ,0,?,?,?)
+             CreatedAt, LastCopiedAt, Thumbnail, PreviewText)
+        VALUES (NULL,?,?,?,?,?,''  ,0,?,?,?,?)
     )", -1, &_stmtInsert, nullptr);
 
     return true;
@@ -155,6 +159,8 @@ int64_t Repository::InsertItem(const ClipboardSnapshot& snap, const SourceInfo& 
         sqlite3_bind_null(_stmtInsert, 8);
     else
         sqlite3_bind_blob(_stmtInsert, 8, snap.thumbnail.data(), (int)snap.thumbnail.size(), SQLITE_TRANSIENT);
+    auto preview = ToUtf8(snap.previewText);
+    sqlite3_bind_text(_stmtInsert, 9, preview.c_str(), -1, SQLITE_TRANSIENT);
 
     sqlite3_step(_stmtInsert);
     return sqlite3_last_insert_rowid(_db);
@@ -164,15 +170,23 @@ int64_t Repository::InsertItem(const ClipboardSnapshot& snap, const SourceInfo& 
 
 int64_t Repository::SaveOrUpdate(const ClipboardSnapshot& snap, const SourceInfo& src)
 {
-    // 중복 감지: 같은 내용 재복사 시 시각만 갱신
+    // 중복 감지: 같은 내용 재복사 시 시각과 출처를 최신으로 갱신
+    // (컨텍스트(앱별) 필터가 마지막 복사 위치 기준으로 동작하도록)
     int64_t existing = FindByHash(snap.contentHash);
     if (existing > 0) {
         std::string now = NowIso8601();
+        auto app = ToUtf8(src.processName);
+        auto win = ToUtf8(src.windowTitle);
+        auto exe = ToUtf8(src.exePath);
         sqlite3_stmt* stmt = nullptr;
         sqlite3_prepare_v2(_db,
-            "UPDATE ClipboardItems SET LastCopiedAt=? WHERE Id=?", -1, &stmt, nullptr);
+            "UPDATE ClipboardItems SET LastCopiedAt=?, SourceApp=?, SourceWindow=?, ExecutablePath=? WHERE Id=?",
+            -1, &stmt, nullptr);
         sqlite3_bind_text (stmt, 1, now.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 2, existing);
+        sqlite3_bind_text (stmt, 2, app.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text (stmt, 3, win.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text (stmt, 4, exe.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 5, existing);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
         return existing;
@@ -200,9 +214,33 @@ int64_t Repository::SaveOrUpdate(const ClipboardSnapshot& snap, const SourceInfo
     }
     sqlite3_finalize(stmt);
 
+    EnforceRetentionLimit();
+
     Execute("COMMIT;");
 
     return itemId;
+}
+
+// 비즐겨찾기 항목을 최신순으로 kMaxHistoryItems개만 유지.
+// 즐겨찾기는 어떤 경우에도 삭제하지 않는다.
+void Repository::EnforceRetentionLimit()
+{
+    static constexpr int kMaxHistoryItems = 1000;
+
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(_db, R"(
+        DELETE FROM ClipboardItems
+        WHERE IsFavorite = 0
+          AND Id NOT IN (
+              SELECT Id FROM ClipboardItems
+              WHERE IsFavorite = 0
+              ORDER BY LastCopiedAt DESC, Id DESC
+              LIMIT ?
+          )
+    )", -1, &stmt, nullptr);
+    sqlite3_bind_int(stmt, 1, kMaxHistoryItems);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
 }
 
 // ── GetItems ─────────────────────────────────────────────────
@@ -210,7 +248,7 @@ int64_t Repository::SaveOrUpdate(const ClipboardSnapshot& snap, const SourceInfo
 static constexpr const char* kItemColumns =
     "Id, Name, SourceApp, SourceWindow, ExecutablePath,"
     " ContentHash, ContentType, Tags, IsFavorite,"
-    " CreatedAt, LastCopiedAt, Thumbnail";
+    " CreatedAt, LastCopiedAt, Thumbnail, PreviewText";
 
 ClipboardItem Repository::ReadItemRow(sqlite3_stmt* stmt)
 {
@@ -233,6 +271,7 @@ ClipboardItem Repository::ReadItemRow(sqlite3_stmt* stmt)
         auto* blob = (const uint8_t*)sqlite3_column_blob(stmt, 11);
         item.thumbnail.assign(blob, blob + sz);
     }
+    item.previewText = FromUtf8((const char*)sqlite3_column_text(stmt, 12));
     return item;
 }
 
@@ -249,9 +288,10 @@ std::vector<ClipboardItem> Repository::GetItems(const std::wstring& search, cons
             wheres.push_back("(',' || Tags || ',') LIKE ? ESCAPE '\\'");
             params.push_back("%" + EscapeLike(s) + ",%");
         } else if (!s.empty()) {
-            wheres.push_back("(Name LIKE ? ESCAPE '\\' OR SourceWindow LIKE ? ESCAPE '\\' OR SourceApp LIKE ? ESCAPE '\\')");
+            wheres.push_back("(Name LIKE ? ESCAPE '\\' OR PreviewText LIKE ? ESCAPE '\\'"
+                             " OR SourceWindow LIKE ? ESCAPE '\\' OR SourceApp LIKE ? ESCAPE '\\')");
             std::string q = "%" + EscapeLike(s) + "%";
-            params.push_back(q); params.push_back(q); params.push_back(q);
+            params.push_back(q); params.push_back(q); params.push_back(q); params.push_back(q);
         }
     }
     if (!app.empty()) {

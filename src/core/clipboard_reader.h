@@ -18,6 +18,7 @@ struct ClipboardSnapshot {
     std::string  contentHash;   // SHA256 hex (중복 감지용)
     ContentType  contentType = ContentType::Other;
     std::vector<uint8_t> thumbnail; // 40x40 PNG (이미지 클립만)
+    std::wstring previewText;       // CF_UNICODETEXT 앞부분 (표시/검색용, 최대 512자)
 };
 
 // STA 스레드(메인 스레드)에서만 호출 가능.

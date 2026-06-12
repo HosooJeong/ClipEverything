@@ -41,6 +41,7 @@ private:
     void Execute(const char* sql);
     int64_t FindByHash(const std::string& hash);
     int64_t InsertItem(const ClipboardSnapshot& snap, const SourceInfo& src, const std::string& now);
+    void EnforceRetentionLimit();
     static ClipboardItem ReadItemRow(sqlite3_stmt* stmt);
 
     // wstring ↔ UTF-8 변환

@@ -123,6 +123,10 @@ std::wstring GetOverlayTitle(const ClipboardItem& item)
 {
     if (item.name && !TrimCopy(*item.name).empty())
         return TrimCopy(*item.name);
+
+    const std::wstring firstLine = TrimCopy(item.PreviewFirstLine());
+    if (!firstLine.empty()) return firstLine;
+
     return L"관리명 없음";
 }
 
@@ -130,6 +134,9 @@ std::wstring GetInlineRenamePrefill(const ClipboardItem& item)
 {
     if (item.name && !TrimCopy(*item.name).empty())
         return TrimCopy(*item.name);
+
+    const std::wstring firstLine = TrimCopy(item.PreviewFirstLine());
+    if (!firstLine.empty()) return Ellipsize(firstLine, 60);
 
     std::wstring sourceWindow = TrimCopy(item.sourceWindow);
     if (!sourceWindow.empty()) return sourceWindow;
