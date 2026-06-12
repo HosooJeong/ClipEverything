@@ -46,12 +46,12 @@ HFONT CreateUiFont(int dpi, int pointSize, int weight = FW_NORMAL)
 
 std::wstring GetCopyLabel(const AppSettings& settings)
 {
-    return settings.copyLabel.empty() ? L"Ctrl+Shift+C" : settings.copyLabel;
+    return settings.copyLabel.empty() ? L"Win+Ctrl+C" : settings.copyLabel;
 }
 
 std::wstring GetPasteLabel(const AppSettings& settings)
 {
-    return settings.pasteLabel.empty() ? L"Ctrl+Shift+V" : settings.pasteLabel;
+    return settings.pasteLabel.empty() ? L"Win+Ctrl+V" : settings.pasteLabel;
 }
 
 std::wstring BuildHelpText(const AppSettings& settings)

@@ -215,8 +215,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         overlay.ShowAndRefresh(ctx.processName);
     };
     clip.OnItemCaptured = [&](int64_t itemId, const SourceInfo&) {
-        // 복사 직후 앱을 전면으로 가져오고 오버레이를 연다.
-        overlay.ShowAndEditItem(itemId);
+        // 설정에 따라 복사 직후 오버레이를 열고 이름 입력 모드로 진입
+        if (settings.openOverlayAfterCopy)
+            overlay.ShowAndEditItem(itemId);
         // 토스트 알림은 HostWndProc의 WM_APP_CLIP_SAVED에서 처리
         PostMessageW(hHost, WM_APP_CLIP_SAVED, (WPARAM)itemId, 0);
     };

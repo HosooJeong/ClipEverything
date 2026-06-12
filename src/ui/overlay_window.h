@@ -44,6 +44,8 @@ private:
         Rename,
         Favorite,
         Delete,
+        ConfirmDelete,   // 인라인 삭제 확인: 삭제 확정
+        CancelDelete,    // 인라인 삭제 확인: 취소
         TagAdd,
         TagChip,
         TagRemove,
@@ -165,6 +167,7 @@ private:
     InlineEditorMode _inlineEditorMode = InlineEditorMode::None;
     int64_t _editingItemId = 0;
     int _editingTagIdx = -1;
+    int64_t _confirmDeleteItemId = 0; // 0이 아니면 해당 항목에 삭제 확인 UI 표시
     ActionHit _hoverAction;
     ActionHit _pressedAction;
     ActionHit _tooltipAction;

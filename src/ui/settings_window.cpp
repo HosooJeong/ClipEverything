@@ -17,10 +17,10 @@ static constexpr wchar_t kClass[] = L"ClipEverythingSettings";
 
 namespace {
 constexpr int kWindowWidthBase  = 428;
-constexpr int kWindowHeightBase = 368;
+constexpr int kWindowHeightBase = 390;
 constexpr int kOuterPadBase     = 12;
 constexpr int kSectionGapBase   = 10;
-constexpr int kGeneralHeightBase = 76;
+constexpr int kGeneralHeightBase = 98;
 constexpr int kHotkeyHeightBase  = 104;
 constexpr int kDataHeightBase    = 72;
 constexpr int kFooterHeightBase  = 28;
@@ -47,6 +47,7 @@ struct SettingsCtx {
     HWND hGeneralGroup = nullptr;
     HWND hStartupCheck = nullptr;
     HWND hToastCheck   = nullptr;
+    HWND hOpenOverlayCheck = nullptr;
 
     HWND hHotkeyGroup = nullptr;
     HWND hCopyLabel   = nullptr;
@@ -100,7 +101,7 @@ static void RecreateFonts(SettingsCtx* ctx)
 static void ApplyControlFonts(const SettingsCtx* ctx)
 {
     const HWND bodyControls[] = {
-        ctx->hGeneralGroup, ctx->hStartupCheck, ctx->hToastCheck,
+        ctx->hGeneralGroup, ctx->hStartupCheck, ctx->hToastCheck, ctx->hOpenOverlayCheck,
         ctx->hHotkeyGroup, ctx->hCopyLabel, ctx->hCopyEdit, ctx->hCopyReset,
         ctx->hPasteLabel, ctx->hPasteEdit, ctx->hPasteReset,
         ctx->hDataGroup, ctx->hDataNote, ctx->hClearAll,
@@ -184,6 +185,10 @@ static void LayoutControls(SettingsCtx* ctx, int clientW, int clientH)
                  SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(ctx->hToastCheck, nullptr,
                  checkboxX, ctx->generalRect.top + S(ctx, 44),
+                 checkboxW, S(ctx, 20),
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(ctx->hOpenOverlayCheck, nullptr,
+                 checkboxX, ctx->generalRect.top + S(ctx, 66),
                  checkboxW, S(ctx, 20),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
@@ -357,6 +362,8 @@ static void CreateControls(HWND hwnd, SettingsCtx* ctx)
                                      BS_AUTOCHECKBOX | WS_TABSTOP, 0, IDC_STARTUP_CHECK);
     ctx->hToastCheck = MakeControl(ctx, hwnd, L"BUTTON", L"복사 시 토스트 알림",
                                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, IDC_TOAST_CHECK);
+    ctx->hOpenOverlayCheck = MakeControl(ctx, hwnd, L"BUTTON", L"복사 후 오버레이 열고 이름 입력",
+                                         BS_AUTOCHECKBOX | WS_TABSTOP, 0, IDC_OPEN_OVERLAY_CHECK);
 
     ctx->hHotkeyGroup = MakeControl(ctx, hwnd, L"BUTTON", L"단축키", BS_GROUPBOX, 0, 0);
     ctx->hCopyLabel = MakeControl(ctx, hwnd, L"STATIC", L"복사", SS_LEFT, 0, 0);
@@ -389,6 +396,8 @@ static void CreateControls(HWND hwnd, SettingsCtx* ctx)
                    IsStartupRegistered() ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hwnd, IDC_TOAST_CHECK,
                    ctx->settings->showToastNotifications ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hwnd, IDC_OPEN_OVERLAY_CHECK,
+                   ctx->settings->openOverlayAfterCopy ? BST_CHECKED : BST_UNCHECKED);
 
     SetWindowSubclass(ctx->hCopyEdit, HotkeyEditSubclass, IDC_HOTKEY_COPY, (DWORD_PTR)ctx);
     SetWindowSubclass(ctx->hPasteEdit, HotkeyEditSubclass, IDC_HOTKEY_PASTE, (DWORD_PTR)ctx);
@@ -463,6 +472,12 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                 case IDC_TOAST_CHECK:
                     ctx->settings->showToastNotifications =
                         IsDlgButtonChecked(hwnd, IDC_TOAST_CHECK) == BST_CHECKED;
+                    ctx->settings->Save();
+                    break;
+
+                case IDC_OPEN_OVERLAY_CHECK:
+                    ctx->settings->openOverlayAfterCopy =
+                        IsDlgButtonChecked(hwnd, IDC_OPEN_OVERLAY_CHECK) == BST_CHECKED;
                     ctx->settings->Save();
                     break;
 

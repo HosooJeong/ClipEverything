@@ -36,6 +36,7 @@ AppSettings AppSettings::Load()
         if (!f.is_open()) return s;
         json j; f >> j;
         s.showToastNotifications = j.value("showToastNotifications", true);
+        s.openOverlayAfterCopy   = j.value("openOverlayAfterCopy",   true);
         s.runAtStartup           = j.value("runAtStartup",           false);
         s.copyMods   = j.value("copyMods",   (UINT)(MOD_WIN | MOD_CONTROL | MOD_NOREPEAT));
         s.copyVk     = j.value("copyVk",     (UINT)'C');
@@ -56,6 +57,7 @@ void AppSettings::Save() const
     try {
         json j;
         j["showToastNotifications"] = showToastNotifications;
+        j["openOverlayAfterCopy"]   = openOverlayAfterCopy;
         j["runAtStartup"]           = runAtStartup;
         j["copyMods"]               = copyMods;
         j["copyVk"]                 = copyVk;

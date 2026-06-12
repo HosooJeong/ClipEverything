@@ -80,6 +80,31 @@ struct TagChipLayout {
     std::wstring text;
 };
 
+struct DeleteConfirmLayout {
+    D2D1_ROUNDED_RECT confirmBounds{};
+    D2D1_ROUNDED_RECT cancelBounds{};
+};
+
+DeleteConfirmLayout BuildDeleteConfirmLayout(float x, float y, float w, float h, float scale)
+{
+    DeleteConfirmLayout layout;
+    const float btnW = 46.0f * scale;
+    const float btnH = 24.0f * scale;
+    const float gap = 6.0f * scale;
+    const float right = x + w - kActionRightPad * scale;
+    const float top = y + (h - btnH) / 2.0f;
+    const float radius = 5.0f * scale;
+    layout.cancelBounds = {
+        D2D1::RectF(right - btnW, top, right, top + btnH),
+        radius, radius,
+    };
+    layout.confirmBounds = {
+        D2D1::RectF(right - btnW * 2.0f - gap, top, right - btnW - gap, top + btnH),
+        radius, radius,
+    };
+    return layout;
+}
+
 struct CardLayout {
     D2D1_ROUNDED_RECT background{};
     D2D1_RECT_F iconRect{};
@@ -955,6 +980,7 @@ void OverlayWindow::ShowOverlay(const std::wstring& contextApp, int64_t editItem
     _selectedIdx = -1;
     _hoverIdx = -1;
     _isClosing = false;
+    _confirmDeleteItemId = 0;
 
     SetWindowTextW(_hSearch, L"");
     LoadItems();
@@ -994,6 +1020,7 @@ void OverlayWindow::Hide()
     ResetTooltip(false);
     _hoverAction = {};
     _pressedAction = {};
+    _confirmDeleteItemId = 0;
     _isClosing = true;
     AnimateWindow(_hwnd, 120, AW_BLEND | AW_HIDE);
     ShowWindow(_hwnd, SW_HIDE);
@@ -1011,6 +1038,8 @@ void OverlayWindow::LoadItems()
         _hoverAction = {};
     if (_tooltipAction.cardIdx >= static_cast<int>(_items.size()))
         ResetTooltip(false);
+    if (_confirmDeleteItemId != 0 && FindItemIndexById(_confirmDeleteItemId) < 0)
+        _confirmDeleteItemId = 0;
 
     _contentHeight = static_cast<float>(_items.size()) * Theme::CardHeight;
     if (_selectedIdx >= static_cast<int>(_items.size())) _selectedIdx = -1;
@@ -1431,9 +1460,11 @@ void OverlayWindow::DrawCard(ID2D1HwndRenderTarget* rt,
         rt->FillRoundedRectangle(rr, fill.Get());
     };
 
+    const bool isConfirmingDelete = (_confirmDeleteItemId != 0 && item.id == _confirmDeleteItemId);
+
     if (titleTf && !(IsInlineRenameActive() && item.id == _editingItemId)) {
         titleTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-        const std::wstring displayName = Ellipsize(GetOverlayTitle(item), 60);
+        const std::wstring displayName = Ellipsize(GetOverlayTitle(item), isConfirmingDelete ? 24 : 60);
         rt->DrawTextW(displayName.c_str(),
                       static_cast<UINT32>(displayName.length()),
                       titleTf,
@@ -1449,6 +1480,48 @@ void OverlayWindow::DrawCard(ID2D1HwndRenderTarget* rt,
                       subTf,
                       layout.subtitleRect,
                       subBrush.Get());
+    }
+
+    if (isConfirmingDelete) {
+        // 삭제 확인 모드: 액션·태그 영역 대신 확인 라벨과 [삭제][취소] 버튼
+        const DeleteConfirmLayout confirm = BuildDeleteConfirmLayout(x, y, w, h, scale);
+
+        if (subTf) {
+            const std::wstring ask = L"삭제할까요?";
+            const float askW = MeasureTextWidth(ask, subTf);
+            const D2D1_RECT_F askRect = D2D1::RectF(
+                confirm.confirmBounds.rect.left - askW - 10.0f * scale,
+                confirm.confirmBounds.rect.top,
+                confirm.confirmBounds.rect.left - 10.0f * scale,
+                confirm.confirmBounds.rect.bottom);
+            subTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            rt->DrawTextW(ask.c_str(), static_cast<UINT32>(ask.length()),
+                          subTf, askRect, dangerBrush.Get());
+        }
+
+        const bool confirmActive = isHovered(ActionTarget::ConfirmDelete) ||
+                                   isPressed(ActionTarget::ConfirmDelete);
+        const bool cancelActive = isHovered(ActionTarget::CancelDelete) ||
+                                  isPressed(ActionTarget::CancelDelete);
+
+        ComPtr<ID2D1SolidColorBrush> confirmBg, confirmText, cancelBg;
+        rt->CreateSolidColorBrush(confirmActive ? D2D1::ColorF(0xA22317) : Theme::Danger(),
+                                  &confirmBg);
+        rt->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &confirmText);
+        rt->CreateSolidColorBrush(cancelActive ? Theme::CardHoverSurface() : Theme::CardSurface(),
+                                  &cancelBg);
+
+        rt->FillRoundedRectangle(confirm.confirmBounds, confirmBg.Get());
+        rt->FillRoundedRectangle(confirm.cancelBounds, cancelBg.Get());
+        rt->DrawRoundedRectangle(confirm.cancelBounds, cardBorderBrush.Get(), 1.0f);
+
+        if (tagTf) {
+            tagTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            rt->DrawTextW(L"삭제", 2, tagTf, confirm.confirmBounds.rect, confirmText.Get());
+            rt->DrawTextW(L"취소", 2, tagTf, confirm.cancelBounds.rect, textBrush.Get());
+            tagTf->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
+        return;
     }
 
     if (tagTf) {
@@ -1678,6 +1751,8 @@ void OverlayWindow::OnPaint()
             status += L"   관리명 입력  Enter 저장  Esc 취소";
         else if (IsInlineTagActive())
             status += L"   태그 입력  Enter 추가  Esc 취소";
+        else if (_confirmDeleteItemId != 0)
+            status += L"   항목 삭제 확인  Esc 취소";
         else if (_hoverAction.type != ActionTarget::None && !GetHoverStatusText().empty()) {
             status += L"   ";
             status += GetHoverStatusText();
@@ -1775,6 +1850,10 @@ std::wstring OverlayWindow::GetTooltipText(const ActionHit& hit) const
             return L"즐겨찾기";
         case ActionTarget::Delete:
             return L"삭제";
+        case ActionTarget::ConfirmDelete:
+            return L"삭제 확정";
+        case ActionTarget::CancelDelete:
+            return L"삭제 취소";
         case ActionTarget::TagAdd:
             return L"태그 추가";
         case ActionTarget::TagRemove:
@@ -1806,6 +1885,10 @@ std::wstring OverlayWindow::GetHoverStatusText() const
             return L"즐겨찾기";
         case ActionTarget::Delete:
             return L"항목 삭제";
+        case ActionTarget::ConfirmDelete:
+            return L"이 항목을 영구 삭제";
+        case ActionTarget::CancelDelete:
+            return L"삭제 취소";
         case ActionTarget::TagAdd:
             return L"태그 추가";
         case ActionTarget::TagChip:
@@ -1855,6 +1938,20 @@ OverlayWindow::ActionHit OverlayWindow::HitTestAction(int x, int y) const
     hit.cardIdx = idx;
     hit.type = ActionTarget::Body;
     hit.rect = layout.background.rect;
+
+    // 삭제 확인 중인 카드는 [삭제]/[취소] 버튼만 히트 대상
+    if (_confirmDeleteItemId != 0 && _items[idx].id == _confirmDeleteItemId) {
+        const DeleteConfirmLayout confirm = BuildDeleteConfirmLayout(
+            0.0f, cardY, static_cast<float>(rc.right), cardH, scale);
+        if (PtInRoundedRect(confirm.confirmBounds, static_cast<float>(x), static_cast<float>(y))) {
+            hit.type = ActionTarget::ConfirmDelete;
+            hit.rect = confirm.confirmBounds.rect;
+        } else if (PtInRoundedRect(confirm.cancelBounds, static_cast<float>(x), static_cast<float>(y))) {
+            hit.type = ActionTarget::CancelDelete;
+            hit.rect = confirm.cancelBounds.rect;
+        }
+        return hit;
+    }
 
     if (IsInlineEditorActive() && IsEditingItem(idx))
         return hit;
@@ -2106,6 +2203,15 @@ void OverlayWindow::OnLButtonUp(int x, int y)
         return;
     }
 
+    // 삭제 확인 중에 버튼 밖을 클릭하면 확인을 취소하고 클릭은 무시
+    if (_confirmDeleteItemId != 0 &&
+        released.type != ActionTarget::ConfirmDelete &&
+        released.type != ActionTarget::CancelDelete) {
+        _confirmDeleteItemId = 0;
+        InvalidateRect(_hwnd, nullptr, FALSE);
+        return;
+    }
+
     switch (released.type) {
         case ActionTarget::ToggleAll:
             _showAll = !_showAll;
@@ -2125,22 +2231,24 @@ void OverlayWindow::OnLButtonUp(int x, int y)
             if (refreshedIdx >= 0) SetSelectedIndex(refreshedIdx);
             return;
         }
-        case ActionTarget::Delete: {
-            const std::wstring label = GetOverlayTitle(_items[released.cardIdx]);
-            const std::wstring message = L"'" + label + L"' 항목을 삭제하시겠습니까?";
-            const int confirm = MessageBoxW(
-                _hwnd,
-                message.c_str(),
-                L"ClipEverything",
-                MB_OKCANCEL | MB_ICONWARNING);
-            if (confirm == IDOK) {
-                const int64_t itemId = _items[released.cardIdx].id;
-                EndInlineEditorSession();
-                _repo.Delete(itemId);
-                LoadItems();
-            }
+        case ActionTarget::Delete:
+            // 인라인 확인 UI로 전환 (즉시 삭제하지 않음)
+            _confirmDeleteItemId = _items[released.cardIdx].id;
+            ResetTooltip(false);
+            InvalidateRect(_hwnd, nullptr, FALSE);
+            return;
+        case ActionTarget::ConfirmDelete: {
+            const int64_t itemId = _confirmDeleteItemId;
+            _confirmDeleteItemId = 0;
+            EndInlineEditorSession();
+            _repo.Delete(itemId);
+            LoadItems();
             return;
         }
+        case ActionTarget::CancelDelete:
+            _confirmDeleteItemId = 0;
+            InvalidateRect(_hwnd, nullptr, FALSE);
+            return;
         case ActionTarget::TagAdd:
             BeginInlineTagEdit(released.cardIdx, -1);
             return;
@@ -2251,6 +2359,13 @@ void OverlayWindow::SetSelectedIndex(int idx)
 
 void OverlayWindow::OnKeyDown(WPARAM vk)
 {
+    // 삭제 확인 중 Esc는 확인 취소
+    if (_confirmDeleteItemId != 0 && vk == VK_ESCAPE) {
+        _confirmDeleteItemId = 0;
+        InvalidateRect(_hwnd, nullptr, FALSE);
+        return;
+    }
+
     if (IsInlineRenameActive()) {
         switch (vk) {
             case VK_RETURN:
