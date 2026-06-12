@@ -93,10 +93,6 @@ DB 구조는 크게 두 테이블로 나뉜다.
   검색창, 카드 목록, 컨텍스트 메뉴, 선택 후 붙여넣기 실행 담당
 - `src/ui/settings_window.*`
   시작 프로그램, 토스트 알림, 핫키 변경, 전체 삭제 설정창
-- `src/ui/rename_dialog.*`
-  항목 이름 변경 다이얼로그
-- `src/ui/tag_dialog.*`
-  태그 편집 다이얼로그
 - `src/ui/toast_popup.*`
   우하단 토스트 표시용 레이어드 윈도우
 - `src/ui/render/d2d_context.*`

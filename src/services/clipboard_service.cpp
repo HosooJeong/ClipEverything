@@ -88,9 +88,10 @@ void ClipboardService::PasteSelectedItem(int64_t itemId)
     // 2. 클립보드 복원
     if (!RestoreToClipboard(clipFmts)) return;
 
-    // 3. 원래 창 포커스 복원
-    if (_pendingTarget.hwnd)
-        SetForegroundWindow(_pendingTarget.hwnd);
+    // 3. 원래 창 포커스 복원 — 타깃이 유효하지 않으면 임의 창에 주입하지 않는다
+    if (!_pendingTarget.hwnd || !IsWindow(_pendingTarget.hwnd))
+        return;
+    SetForegroundWindow(_pendingTarget.hwnd);
     Sleep(50);
 
     // 4. Ctrl+V 시뮬레이션

@@ -28,25 +28,6 @@
 #endif
 
 #define DWMWCP_ROUND 2
-#define DWMSBT_MAINWINDOW 2
-
-#define WCA_ACCENT_POLICY 19
-#define ACCENT_ENABLE_ACRYLICBLURBEHIND 4
-
-struct AccentPolicy {
-    int AccentState;
-    int AccentFlags;
-    int GradientColor;
-    int AnimationId;
-};
-
-struct WinCompAttribData {
-    int Attrib;
-    void* pvData;
-    int cbData;
-};
-
-typedef BOOL(WINAPI* SetWinCompAttrFn)(HWND, WinCompAttribData*);
 
 namespace {
 
@@ -114,14 +95,6 @@ struct CardLayout {
     float contentRight = 0.0f;
     std::vector<TagChipLayout> tagChips;
 };
-
-bool IsWin11()
-{
-    OSVERSIONINFOEXW osvi = { sizeof(osvi) };
-    ULONGLONG mask = VerSetConditionMask(0, VER_BUILDNUMBER, VER_GREATER_EQUAL);
-    osvi.dwBuildNumber = 22000;
-    return VerifyVersionInfoW(&osvi, VER_BUILDNUMBER, mask) != FALSE;
-}
 
 std::wstring TrimCopy(const std::wstring& value)
 {

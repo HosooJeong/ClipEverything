@@ -25,8 +25,8 @@ static void RenderToast(HWND hwnd, ToastData* td, int alpha)
     RECT rc; GetClientRect(hwnd, &rc);
     int w = rc.right, h = rc.bottom;
 
-    HDC hdc = GetDC(hwnd);
-    HDC memDC = CreateCompatibleDC(hdc);
+    HDC hdcScreen = GetDC(nullptr);
+    HDC memDC = CreateCompatibleDC(hdcScreen);
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth       = w;
@@ -36,7 +36,12 @@ static void RenderToast(HWND hwnd, ToastData* td, int alpha)
     bmi.bmiHeader.biCompression = BI_RGB;
     void* bits = nullptr;
     HBITMAP hBmp = CreateDIBSection(memDC, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    SelectObject(memDC, hBmp);
+    if (!hBmp) {
+        DeleteDC(memDC);
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
+    HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
 
     // Direct2D DC 렌더링
     auto& ctx = D2DContext::Get();
@@ -80,16 +85,14 @@ static void RenderToast(HWND hwnd, ToastData* td, int alpha)
     POINT ptSrc = { 0, 0 };
     SIZE sz = { w, h };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)alpha, AC_SRC_ALPHA };
-    POINT ptDest = {};
-    GetWindowRect(hwnd, reinterpret_cast<RECT*>(&ptDest));  // 실제로는 별도 계산
-    POINT wndPos = {};
     RECT wr; GetWindowRect(hwnd, &wr);
-    wndPos = { wr.left, wr.top };
-    UpdateLayeredWindow(hwnd, GetDC(nullptr), &wndPos, &sz, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
+    POINT wndPos = { wr.left, wr.top };
+    UpdateLayeredWindow(hwnd, hdcScreen, &wndPos, &sz, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
 
+    SelectObject(memDC, oldBmp);
     DeleteObject(hBmp);
     DeleteDC(memDC);
-    ReleaseDC(hwnd, hdc);
+    ReleaseDC(nullptr, hdcScreen);
 }
 
 static LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)

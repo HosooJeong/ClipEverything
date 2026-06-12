@@ -474,30 +474,31 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                     break;
 
                 case IDC_RESET_COPY:
-                    ctx->pendingConfig.copyMods  = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+                    ctx->pendingConfig.copyMods  = MOD_WIN | MOD_CONTROL | MOD_NOREPEAT;
                     ctx->pendingConfig.copyVk    = 'C';
-                    ctx->pendingConfig.copyLabel = L"Ctrl+Shift+C";
-                    SetDlgItemTextW(hwnd, IDC_HOTKEY_COPY, L"Ctrl+Shift+C");
+                    ctx->pendingConfig.copyLabel = L"Win+Ctrl+C";
+                    SetDlgItemTextW(hwnd, IDC_HOTKEY_COPY, L"Win+Ctrl+C");
                     ctx->capturedCopy = true;
                     break;
 
                 case IDC_RESET_PASTE:
-                    ctx->pendingConfig.pasteMods  = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+                    ctx->pendingConfig.pasteMods  = MOD_WIN | MOD_CONTROL | MOD_NOREPEAT;
                     ctx->pendingConfig.pasteVk    = 'V';
-                    ctx->pendingConfig.pasteLabel = L"Ctrl+Shift+V";
-                    SetDlgItemTextW(hwnd, IDC_HOTKEY_PASTE, L"Ctrl+Shift+V");
+                    ctx->pendingConfig.pasteLabel = L"Win+Ctrl+V";
+                    SetDlgItemTextW(hwnd, IDC_HOTKEY_PASTE, L"Win+Ctrl+V");
                     ctx->capturedPaste = true;
                     break;
 
                 case IDC_SETTINGS_CLOSE:
-                    if (ctx->onHotkeyChanged)
-                        ctx->onHotkeyChanged(ctx->pendingConfig);
-                    DestroyWindow(hwnd);
+                    SendMessageW(hwnd, WM_CLOSE, 0, 0);
                     break;
             }
             return 0;
 
+        // X 버튼·닫기 버튼 모두 같은 경로: 변경된 단축키를 적용하고 닫는다
         case WM_CLOSE:
+            if (ctx && ctx->onHotkeyChanged)
+                ctx->onHotkeyChanged(ctx->pendingConfig);
             DestroyWindow(hwnd);
             return 0;
 

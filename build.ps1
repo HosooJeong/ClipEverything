@@ -58,8 +58,6 @@ $clArgs = @(
     "$Src\ui\toast_popup.cpp",
     "$Src\ui\settings_window.cpp",
     "$Src\ui\help_window.cpp",
-    "$Src\ui\rename_dialog.cpp",
-    "$Src\ui\tag_dialog.cpp",
     "$Tp\sqlite3.c",
     "/link",
     "/nologo", "/SUBSYSTEM:WINDOWS", "/LTCG",

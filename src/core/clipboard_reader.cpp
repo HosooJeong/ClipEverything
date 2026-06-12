@@ -280,30 +280,62 @@ static std::string ComputeFormatsHash(const std::vector<RawClipboardFormat>& for
     return sha.Finish();
 }
 
+// 클립보드 DIB는 다른 프로세스가 만든 비신뢰 데이터 — 헤더를 검증한 뒤 사용한다.
+static bool ValidateDib(const uint8_t* dibData, size_t dibSize, DWORD& pixelOffset)
+{
+    if (!dibData || dibSize < sizeof(BITMAPINFOHEADER))
+        return false;
+
+    const BITMAPINFOHEADER* bih = reinterpret_cast<const BITMAPINFOHEADER*>(dibData);
+    if (bih->biSize < sizeof(BITMAPINFOHEADER) || bih->biSize > dibSize)
+        return false;
+    if (bih->biWidth <= 0 || bih->biWidth > 32768 ||
+        bih->biHeight == 0 || bih->biHeight > 32768 || bih->biHeight < -32768)
+        return false;
+    if (bih->biBitCount > 32)
+        return false;
+
+    uint64_t offset = bih->biSize;
+    if (bih->biClrUsed > 0) {
+        if (bih->biClrUsed > 256) return false;
+        offset += static_cast<uint64_t>(bih->biClrUsed) * 4;
+    } else if (bih->biBitCount > 0 && bih->biBitCount <= 8) {
+        offset += (1ull << bih->biBitCount) * 4;
+    }
+    if (bih->biCompression == BI_BITFIELDS)
+        offset += 12;
+
+    if (offset >= dibSize)
+        return false;
+
+    pixelOffset = static_cast<DWORD>(offset);
+    return true;
+}
+
 static std::vector<uint8_t> MakeThumbnail(const uint8_t* dibData, size_t dibSize)
 {
+    DWORD pixelOffset = 0;
+    if (!ValidateDib(dibData, dibSize, pixelOffset))
+        return {};
+
     IWICImagingFactory* pFactory = nullptr;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_IWICImagingFactory, reinterpret_cast<void**>(&pFactory))))
         return {};
 
-    const BITMAPINFOHEADER* bih = reinterpret_cast<const BITMAPINFOHEADER*>(dibData);
     BITMAPINFO* bmi = reinterpret_cast<BITMAPINFO*>(const_cast<uint8_t*>(dibData));
 
     HDC hdc = GetDC(nullptr);
     void* bits = nullptr;
     HBITMAP hBmp = CreateDIBSection(hdc, bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
     ReleaseDC(nullptr, hdc);
-    if (!hBmp) {
+    if (!hBmp || !bits) {
+        if (hBmp) DeleteObject(hBmp);
         pFactory->Release();
         return {};
     }
 
-    DWORD pixelOffset = bih->biSize;
-    if (bih->biClrUsed > 0) pixelOffset += bih->biClrUsed * 4;
-    else if (bih->biBitCount <= 8) pixelOffset += (1u << bih->biBitCount) * 4;
-    if (pixelOffset < dibSize)
-        memcpy(bits, dibData + pixelOffset, dibSize - pixelOffset);
+    memcpy(bits, dibData + pixelOffset, dibSize - pixelOffset);
 
     IWICBitmap* pBitmap = nullptr;
     pFactory->CreateBitmapFromHBITMAP(hBmp, nullptr, WICBitmapUseAlpha, &pBitmap);
@@ -314,33 +346,40 @@ static std::vector<uint8_t> MakeThumbnail(const uint8_t* dibData, size_t dibSize
         return {};
     }
 
+    std::vector<uint8_t> png;
     IWICBitmapScaler* pScaler = nullptr;
-    pFactory->CreateBitmapScaler(&pScaler);
-    pScaler->Initialize(pBitmap, 40, 40, WICBitmapInterpolationModeFant);
-
-    IStream* pStream = SHCreateMemStream(nullptr, 0);
+    IStream* pStream = nullptr;
     IWICBitmapEncoder* pEnc = nullptr;
     IWICBitmapFrameEncode* pFrame = nullptr;
-    pFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &pEnc);
-    pEnc->Initialize(pStream, WICBitmapEncoderNoCache);
-    pEnc->CreateNewFrame(&pFrame, nullptr);
-    pFrame->Initialize(nullptr);
-    pFrame->WriteSource(pScaler, nullptr);
-    pFrame->Commit();
-    pEnc->Commit();
 
-    STATSTG stat{};
-    pStream->Stat(&stat, STATFLAG_NONAME);
-    std::vector<uint8_t> png(static_cast<size_t>(stat.cbSize.QuadPart));
-    LARGE_INTEGER li{};
-    pStream->Seek(li, STREAM_SEEK_SET, nullptr);
-    ULONG read = 0;
-    pStream->Read(png.data(), static_cast<ULONG>(png.size()), &read);
+    bool ok = SUCCEEDED(pFactory->CreateBitmapScaler(&pScaler)) &&
+              SUCCEEDED(pScaler->Initialize(pBitmap, 40, 40, WICBitmapInterpolationModeFant)) &&
+              (pStream = SHCreateMemStream(nullptr, 0)) != nullptr &&
+              SUCCEEDED(pFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &pEnc)) &&
+              SUCCEEDED(pEnc->Initialize(pStream, WICBitmapEncoderNoCache)) &&
+              SUCCEEDED(pEnc->CreateNewFrame(&pFrame, nullptr)) &&
+              SUCCEEDED(pFrame->Initialize(nullptr)) &&
+              SUCCEEDED(pFrame->WriteSource(pScaler, nullptr)) &&
+              SUCCEEDED(pFrame->Commit()) &&
+              SUCCEEDED(pEnc->Commit());
 
-    pFrame->Release();
-    pEnc->Release();
-    pStream->Release();
-    pScaler->Release();
+    if (ok) {
+        STATSTG stat{};
+        if (SUCCEEDED(pStream->Stat(&stat, STATFLAG_NONAME)) && stat.cbSize.QuadPart > 0) {
+            png.resize(static_cast<size_t>(stat.cbSize.QuadPart));
+            LARGE_INTEGER li{};
+            pStream->Seek(li, STREAM_SEEK_SET, nullptr);
+            ULONG read = 0;
+            if (FAILED(pStream->Read(png.data(), static_cast<ULONG>(png.size()), &read)) ||
+                read != png.size())
+                png.clear();
+        }
+    }
+
+    if (pFrame)  pFrame->Release();
+    if (pEnc)    pEnc->Release();
+    if (pStream) pStream->Release();
+    if (pScaler) pScaler->Release();
     pBitmap->Release();
     pFactory->Release();
     return png;

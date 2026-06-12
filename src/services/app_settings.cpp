@@ -37,9 +37,9 @@ AppSettings AppSettings::Load()
         json j; f >> j;
         s.showToastNotifications = j.value("showToastNotifications", true);
         s.runAtStartup           = j.value("runAtStartup",           false);
-        s.copyMods   = j.value("copyMods",   (UINT)(MOD_WIN | MOD_CONTROL));
+        s.copyMods   = j.value("copyMods",   (UINT)(MOD_WIN | MOD_CONTROL | MOD_NOREPEAT));
         s.copyVk     = j.value("copyVk",     (UINT)'C');
-        s.pasteMods  = j.value("pasteMods",  (UINT)(MOD_WIN | MOD_CONTROL));
+        s.pasteMods  = j.value("pasteMods",  (UINT)(MOD_WIN | MOD_CONTROL | MOD_NOREPEAT));
         s.pasteVk    = j.value("pasteVk",    (UINT)'V');
         s.copyLabel  = U8ToW(j.value("copyLabel",  "Win+Ctrl+C"));
         s.pasteLabel = U8ToW(j.value("pasteLabel", "Win+Ctrl+V"));

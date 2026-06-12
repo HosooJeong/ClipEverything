@@ -12,6 +12,7 @@ std::string Repository::ToUtf8(const std::wstring& ws)
 {
     if (ws.empty()) return {};
     int sz = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (sz <= 1) return {};
     std::string s(sz - 1, 0);
     WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, s.data(), sz, nullptr, nullptr);
     return s;
@@ -21,9 +22,22 @@ std::wstring Repository::FromUtf8(const char* s)
 {
     if (!s || !s[0]) return {};
     int sz = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (sz <= 1) return {};
     std::wstring ws(sz - 1, 0);
     MultiByteToWideChar(CP_UTF8, 0, s, -1, ws.data(), sz);
     return ws;
+}
+
+// LIKE 패턴에서 와일드카드로 해석되는 문자 이스케이프 (ESCAPE '\' 절과 함께 사용)
+static std::string EscapeLike(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '%' || c == '_' || c == '\\') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
 }
 
 // ── 현재 UTC ISO 8601 문자열 ─────────────────────────────────
@@ -150,58 +164,93 @@ int64_t Repository::InsertItem(const ClipboardSnapshot& snap, const SourceInfo& 
 
 int64_t Repository::SaveOrUpdate(const ClipboardSnapshot& snap, const SourceInfo& src)
 {
-    // 중복 감지
+    // 중복 감지: 같은 내용 재복사 시 시각만 갱신
     int64_t existing = FindByHash(snap.contentHash);
     if (existing > 0) {
         std::string now = NowIso8601();
-        std::string sql = "UPDATE ClipboardItems SET LastCopiedAt='" + now + "' WHERE Id=" + std::to_string(existing);
-        Execute(sql.c_str());
+        sqlite3_stmt* stmt = nullptr;
+        sqlite3_prepare_v2(_db,
+            "UPDATE ClipboardItems SET LastCopiedAt=? WHERE Id=?", -1, &stmt, nullptr);
+        sqlite3_bind_text (stmt, 1, now.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, existing);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
         return existing;
     }
 
     std::string now = NowIso8601();
+
+    // 아이템 + 포맷 저장을 하나의 트랜잭션으로 (원자성 + fsync 1회)
+    Execute("BEGIN IMMEDIATE;");
+
     int64_t itemId = InsertItem(snap, src, now);
 
-    // 포맷 저장
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(_db,
+        "INSERT INTO ClipboardFormats (ItemId,FormatId,FormatName,Data) VALUES(?,?,?,?)",
+        -1, &stmt, nullptr);
     for (auto& fmt : snap.formats) {
-        sqlite3_stmt* stmt = nullptr;
-        sqlite3_prepare_v2(_db,
-            "INSERT INTO ClipboardFormats (ItemId,FormatId,FormatName,Data) VALUES(?,?,?,?)",
-            -1, &stmt, nullptr);
+        sqlite3_reset(stmt);
         auto fname = ToUtf8(fmt.formatName);
         sqlite3_bind_int64(stmt, 1, itemId);
         sqlite3_bind_int64(stmt, 2, fmt.formatId);
         sqlite3_bind_text (stmt, 3, fname.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_blob (stmt, 4, fmt.data.data(), (int)fmt.data.size(), SQLITE_TRANSIENT);
         sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
     }
+    sqlite3_finalize(stmt);
+
+    Execute("COMMIT;");
 
     return itemId;
 }
 
 // ── GetItems ─────────────────────────────────────────────────
 
+static constexpr const char* kItemColumns =
+    "Id, Name, SourceApp, SourceWindow, ExecutablePath,"
+    " ContentHash, ContentType, Tags, IsFavorite,"
+    " CreatedAt, LastCopiedAt, Thumbnail";
+
+ClipboardItem Repository::ReadItemRow(sqlite3_stmt* stmt)
+{
+    ClipboardItem item;
+    item.id = sqlite3_column_int64(stmt, 0);
+    if (sqlite3_column_type(stmt, 1) != SQLITE_NULL)
+        item.name = FromUtf8((const char*)sqlite3_column_text(stmt, 1));
+    item.sourceApp    = FromUtf8((const char*)sqlite3_column_text(stmt, 2));
+    item.sourceWindow = FromUtf8((const char*)sqlite3_column_text(stmt, 3));
+    item.exePath      = FromUtf8((const char*)sqlite3_column_text(stmt, 4));
+    if (auto* hash = (const char*)sqlite3_column_text(stmt, 5))
+        item.contentHash = hash;
+    item.contentType  = (ContentType)sqlite3_column_int(stmt, 6);
+    item.tags         = FromUtf8((const char*)sqlite3_column_text(stmt, 7));
+    item.isFavorite   = sqlite3_column_int(stmt, 8) != 0;
+    item.createdAt    = FromUtf8((const char*)sqlite3_column_text(stmt, 9));
+    item.lastCopiedAt = FromUtf8((const char*)sqlite3_column_text(stmt, 10));
+    if (sqlite3_column_type(stmt, 11) != SQLITE_NULL) {
+        int sz = sqlite3_column_bytes(stmt, 11);
+        auto* blob = (const uint8_t*)sqlite3_column_blob(stmt, 11);
+        item.thumbnail.assign(blob, blob + sz);
+    }
+    return item;
+}
+
 std::vector<ClipboardItem> Repository::GetItems(const std::wstring& search, const std::wstring& app)
 {
-    std::string sql = R"(
-        SELECT Id, Name, SourceApp, SourceWindow, ExecutablePath,
-               ContentHash, ContentType, Tags, IsFavorite,
-               CreatedAt, LastCopiedAt, Thumbnail
-        FROM ClipboardItems
-    )";
+    std::string sql = std::string("SELECT ") + kItemColumns + " FROM ClipboardItems";
 
     std::vector<std::string> wheres;
     std::vector<std::string> params;
 
     if (!search.empty()) {
         auto s = ToUtf8(search);
-        if (s[0] == '#') {
-            wheres.push_back("(',' || Tags || ',') LIKE ?");
-            params.push_back("%" + s + ",%");
-        } else {
-            wheres.push_back("(Name LIKE ? OR SourceWindow LIKE ? OR SourceApp LIKE ?)");
-            std::string q = "%" + s + "%";
+        if (!s.empty() && s[0] == '#') {
+            wheres.push_back("(',' || Tags || ',') LIKE ? ESCAPE '\\'");
+            params.push_back("%" + EscapeLike(s) + ",%");
+        } else if (!s.empty()) {
+            wheres.push_back("(Name LIKE ? ESCAPE '\\' OR SourceWindow LIKE ? ESCAPE '\\' OR SourceApp LIKE ? ESCAPE '\\')");
+            std::string q = "%" + EscapeLike(s) + "%";
             params.push_back(q); params.push_back(q); params.push_back(q);
         }
     }
@@ -227,29 +276,27 @@ std::vector<ClipboardItem> Repository::GetItems(const std::wstring& search, cons
         sqlite3_bind_text(stmt, col++, p.c_str(), -1, SQLITE_TRANSIENT);
 
     std::vector<ClipboardItem> items;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        ClipboardItem item;
-        item.id = sqlite3_column_int64(stmt, 0);
-        if (sqlite3_column_type(stmt, 1) != SQLITE_NULL)
-            item.name = FromUtf8((const char*)sqlite3_column_text(stmt, 1));
-        item.sourceApp    = FromUtf8((const char*)sqlite3_column_text(stmt, 2));
-        item.sourceWindow = FromUtf8((const char*)sqlite3_column_text(stmt, 3));
-        item.exePath      = FromUtf8((const char*)sqlite3_column_text(stmt, 4));
-        item.contentHash  = (const char*)sqlite3_column_text(stmt, 5);
-        item.contentType  = (ContentType)sqlite3_column_int(stmt, 6);
-        item.tags         = FromUtf8((const char*)sqlite3_column_text(stmt, 7));
-        item.isFavorite   = sqlite3_column_int(stmt, 8) != 0;
-        item.createdAt    = FromUtf8((const char*)sqlite3_column_text(stmt, 9));
-        item.lastCopiedAt = FromUtf8((const char*)sqlite3_column_text(stmt, 10));
-        if (sqlite3_column_type(stmt, 11) != SQLITE_NULL) {
-            int sz = sqlite3_column_bytes(stmt, 11);
-            auto* blob = (const uint8_t*)sqlite3_column_blob(stmt, 11);
-            item.thumbnail.assign(blob, blob + sz);
-        }
-        items.push_back(std::move(item));
-    }
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        items.push_back(ReadItemRow(stmt));
     sqlite3_finalize(stmt);
     return items;
+}
+
+// ── GetItemById ──────────────────────────────────────────────
+
+std::optional<ClipboardItem> Repository::GetItemById(int64_t id)
+{
+    const std::string sql = std::string("SELECT ") + kItemColumns +
+                            " FROM ClipboardItems WHERE Id=? LIMIT 1";
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(_db, sql.c_str(), -1, &stmt, nullptr);
+    sqlite3_bind_int64(stmt, 1, id);
+
+    std::optional<ClipboardItem> item;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        item = ReadItemRow(stmt);
+    sqlite3_finalize(stmt);
+    return item;
 }
 
 // ── GetFormats ───────────────────────────────────────────────

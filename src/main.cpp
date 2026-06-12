@@ -18,8 +18,7 @@
 #include "ui/overlay_window.h"
 #include "ui/settings_window.h"
 #include "ui/help_window.h"
-#include "ui/rename_dialog.h"
-#include "ui/tag_dialog.h"
+#include "ui/toast_popup.h"
 #include "../resources/resource.h"
 
 // ─────────────────────────────────────────
@@ -63,18 +62,13 @@ static LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_app->overlay->ShowAndRefresh(L"");
             return 0;
 
-        // 워커 스레드에서 DB 저장 완료 → 토스트 표시
+        // 클립 저장 완료 → 토스트 표시
         case WM_APP_CLIP_SAVED: {
             if (!g_app || !g_app->settings->showToastNotifications) return 0;
             int64_t itemId = (int64_t)wp;
             if (g_app->repo) {
-                auto items = g_app->repo->GetItems();
-                for (auto& it : items) {
-                    if (it.id == itemId) {
-                        ShowToast(g_app->hInst, it);
-                        break;
-                    }
-                }
+                if (auto item = g_app->repo->GetItemById(itemId))
+                    ShowToast(g_app->hInst, *item);
             }
             return 0;
         }
@@ -117,7 +111,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // 기존 인스턴스의 팝업 활성화
-        HWND hExisting = FindWindowW(kHostClass, nullptr);
+        // 호스트 창은 message-only(HWND_MESSAGE)라 FindWindowW로는 찾을 수 없음
+        HWND hExisting = FindWindowExW(HWND_MESSAGE, nullptr, kHostClass, nullptr);
         if (hExisting)
             PostMessageW(hExisting, WM_APP_SHOW_OVERLAY, 0, 0);
         if (hMutex) CloseHandle(hMutex);
@@ -160,8 +155,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     OverlayWindow::RegisterClass(hInst);
     RegisterSettingsClass(hInst);
     RegisterHelpClass(hInst);
-    RegisterRenameClass(hInst);
-    RegisterTagClass(hInst);
+    RegisterToastClass(hInst);
 
     // ── 7. 숨겨진 호스트 창 생성 (WM_HOTKEY 수신용)
     HWND hHost = CreateWindowExW(0, kHostClass, L"ClipEverything",
