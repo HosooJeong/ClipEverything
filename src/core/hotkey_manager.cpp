@@ -39,9 +39,9 @@ bool HotkeyManager::UpdateHotkeys(const HotkeyConfig& preferred)
         return true;
     }
 
+    // 메시지 문구는 호출 측(main)에서 현재 언어로 조립한다
     if (OnConflict)
-        OnConflict(preferred.copyLabel + L"/" + preferred.pasteLabel
-            + L" 등록 실패. 설정에서 단축키를 변경해주세요.");
+        OnConflict(preferred.copyLabel + L"/" + preferred.pasteLabel);
     return false;
 }
 

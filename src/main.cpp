@@ -10,6 +10,7 @@
 #include "core/hotkey_manager.h"
 #include "data/repository.h"
 #include "services/app_settings.h"
+#include "services/localization.h"
 #include "services/startup_service.h"
 #include "services/tray_service.h"
 #include "services/clipboard_service.h"
@@ -18,8 +19,7 @@
 #include "ui/overlay_window.h"
 #include "ui/settings_window.h"
 #include "ui/help_window.h"
-#include "ui/rename_dialog.h"
-#include "ui/tag_dialog.h"
+#include "ui/toast_popup.h"
 #include "../resources/resource.h"
 
 // ─────────────────────────────────────────
@@ -63,18 +63,13 @@ static LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_app->overlay->ShowAndRefresh(L"");
             return 0;
 
-        // 워커 스레드에서 DB 저장 완료 → 토스트 표시
+        // 클립 저장 완료 → 토스트 표시
         case WM_APP_CLIP_SAVED: {
             if (!g_app || !g_app->settings->showToastNotifications) return 0;
             int64_t itemId = (int64_t)wp;
             if (g_app->repo) {
-                auto items = g_app->repo->GetItems();
-                for (auto& it : items) {
-                    if (it.id == itemId) {
-                        ShowToast(g_app->hInst, it);
-                        break;
-                    }
-                }
+                if (auto item = g_app->repo->GetItemById(itemId))
+                    ShowToast(g_app->hInst, *item);
             }
             return 0;
         }
@@ -117,7 +112,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         // 기존 인스턴스의 팝업 활성화
-        HWND hExisting = FindWindowW(kHostClass, nullptr);
+        // 호스트 창은 message-only(HWND_MESSAGE)라 FindWindowW로는 찾을 수 없음
+        HWND hExisting = FindWindowExW(HWND_MESSAGE, nullptr, kHostClass, nullptr);
         if (hExisting)
             PostMessageW(hExisting, WM_APP_SHOW_OVERLAY, 0, 0);
         if (hMutex) CloseHandle(hMutex);
@@ -127,18 +123,19 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     // ── 3. COM STA 초기화 (클립보드 API 사용 전 필수)
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
-    // ── 4. Direct2D / WIC / DirectWrite 초기화
+    // ── 4. 설정 로드 + 표시 언어 결정 (이후 모든 UI 문자열에 적용)
+    AppSettings  settings = AppSettings::Load();
+    SetAppLanguage(ParseLanguageSetting(settings.language));
+
+    // ── 5. Direct2D / WIC / DirectWrite 초기화
     if (!D2DContext::Get().Initialize()) {
-        MessageBoxW(nullptr, L"Direct2D 초기화에 실패했습니다.", L"오류", MB_ICONERROR);
+        MessageBoxW(nullptr, Tr(Str::ErrorD2DInit), Tr(Str::ErrorTitle), MB_ICONERROR);
         return 1;
     }
 
-    // ── 5. 서비스 인스턴스 생성
-    AppSettings  settings = AppSettings::Load();
-
     Repository   repo;
     if (!repo.Initialize()) {
-        MessageBoxW(nullptr, L"데이터베이스 초기화에 실패했습니다.", L"오류", MB_ICONERROR);
+        MessageBoxW(nullptr, Tr(Str::ErrorDbInit), Tr(Str::ErrorTitle), MB_ICONERROR);
         return 1;
     }
 
@@ -160,15 +157,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     OverlayWindow::RegisterClass(hInst);
     RegisterSettingsClass(hInst);
     RegisterHelpClass(hInst);
-    RegisterRenameClass(hInst);
-    RegisterTagClass(hInst);
+    RegisterToastClass(hInst);
 
     // ── 7. 숨겨진 호스트 창 생성 (WM_HOTKEY 수신용)
     HWND hHost = CreateWindowExW(0, kHostClass, L"ClipEverything",
                                   0, 0, 0, 0, 0,
                                   HWND_MESSAGE, nullptr, hInst, nullptr);
     if (!hHost) {
-        MessageBoxW(nullptr, L"호스트 창 생성에 실패했습니다.", L"오류", MB_ICONERROR);
+        MessageBoxW(nullptr, Tr(Str::ErrorHostWindow), Tr(Str::ErrorTitle), MB_ICONERROR);
         return 1;
     }
 
@@ -201,8 +197,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
     // ── 10. 단축키 초기화
     hotkeys.OnCopyHotkey  = [&]() { clip.OnCopyHotkey();  };
     hotkeys.OnPasteHotkey = [&]() { clip.OnPasteHotkey(); };
-    hotkeys.OnConflict = [&](const std::wstring& msg) {
-        tray.ShowBalloon(L"단축키 충돌", msg);
+    hotkeys.OnConflict = [&](const std::wstring& labels) {
+        tray.ShowBalloon(Tr(Str::HotkeyConflictTitle),
+                         TrFmt(Str::HotkeyConflictMsgFmt, labels));
     };
 
     HotkeyConfig hkCfg;
@@ -221,10 +218,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int)
         overlay.ShowAndRefresh(ctx.processName);
     };
     clip.OnItemCaptured = [&](int64_t itemId, const SourceInfo&) {
-        // 복사 직후 앱을 전면으로 가져오고 오버레이를 연다.
-        overlay.ShowAndEditItem(itemId);
+        // 설정에 따라 복사 직후 오버레이를 열고 이름 입력 모드로 진입
+        if (settings.openOverlayAfterCopy)
+            overlay.ShowAndEditItem(itemId);
         // 토스트 알림은 HostWndProc의 WM_APP_CLIP_SAVED에서 처리
         PostMessageW(hHost, WM_APP_CLIP_SAVED, (WPARAM)itemId, 0);
+    };
+    clip.OnSensitiveSkipped = [&]() {
+        // 저장이 조용히 누락되면 혼란스러우므로 토스트 설정과 무관하게 안내
+        ShowToastMessage(hInst, Tr(Str::ToastNotSavedTitle), Tr(Str::ToastNotSavedSub));
     };
 
     // ── 12. 시작 시 팝업 열기 (자동 실행 모드가 아닐 때만)

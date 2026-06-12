@@ -4,6 +4,7 @@
 
 #include "../resources/resource.h"
 #include "../services/app_settings.h"
+#include "../services/localization.h"
 
 namespace {
 
@@ -46,62 +47,19 @@ HFONT CreateUiFont(int dpi, int pointSize, int weight = FW_NORMAL)
 
 std::wstring GetCopyLabel(const AppSettings& settings)
 {
-    return settings.copyLabel.empty() ? L"Ctrl+Shift+C" : settings.copyLabel;
+    return settings.copyLabel.empty() ? L"Win+Ctrl+C" : settings.copyLabel;
 }
 
 std::wstring GetPasteLabel(const AppSettings& settings)
 {
-    return settings.pasteLabel.empty() ? L"Ctrl+Shift+V" : settings.pasteLabel;
+    return settings.pasteLabel.empty() ? L"Win+Ctrl+V" : settings.pasteLabel;
 }
 
 std::wstring BuildHelpText(const AppSettings& settings)
 {
-    const std::wstring copyLabel = GetCopyLabel(settings);
-    const std::wstring pasteLabel = GetPasteLabel(settings);
-
-    std::wstring text;
-    text.reserve(2048);
-    text += L"ClipEverything은 복사한 텍스트, 파일, 이미지 등의 기록을 저장해 두었다가 다시 빠르게 붙여넣을 수 있도록 도와주는 앱입니다.\r\n\r\n";
-
-    text += L"[기본 단축키]\r\n";
-    text += L"- 복사: ";
-    text += copyLabel;
-    text += L"\r\n";
-    text += L"- 붙여넣기: ";
-    text += pasteLabel;
-    text += L"\r\n\r\n";
-
-    text += L"[복사와 저장]\r\n";
-    text += L"- 복사할 내용을 선택한 뒤 복사 단축키를 누르면 현재 클립보드 내용이 기록으로 저장됩니다.\r\n";
-    text += L"- 복사 직후 오버레이가 열리며, 방금 저장한 항목의 관리명을 바로 입력할 수 있습니다.\r\n";
-    text += L"- 같은 내용이면 새 항목을 만들지 않고 기존 항목의 최근 복사 시각만 갱신합니다.\r\n\r\n";
-
-    text += L"[오버레이 사용]\r\n";
-    text += L"- 붙여넣기 단축키를 누르면 오버레이가 열립니다.\r\n";
-    text += L"- 기본적으로 현재 프로그램 기준 목록을 보여 주며, 우측 상단의 '전체 포함'으로 전체 기록을 볼 수 있습니다.\r\n";
-    text += L"- 검색창에서는 관리명, 프로그램명, #태그로 검색할 수 있습니다.\r\n";
-    text += L"- 항목을 클릭하거나 Enter를 누르면 붙여넣기하고, Esc를 누르면 오버레이를 닫습니다.\r\n";
-    text += L"- 항목이 많으면 세로 스크롤로 이동할 수 있습니다.\r\n";
-    text += L"- 오버레이는 헤더를 드래그해서 이동할 수 있고, 상단/하단 가장자리로 세로 크기를 조절할 수 있습니다.\r\n\r\n";
-
-    text += L"[항목에서 할 수 있는 일]\r\n";
-    text += L"- 관리명 수정\r\n";
-    text += L"- 즐겨찾기 추가 또는 해제\r\n";
-    text += L"- 태그 추가, 수정, 삭제\r\n";
-    text += L"- 항목 삭제\r\n";
-    text += L"- 즐겨찾기 항목은 목록 상단에 먼저 표시됩니다.\r\n\r\n";
-
-    text += L"[설정]\r\n";
-    text += L"- Windows 시작 시 자동 실행\r\n";
-    text += L"- 복사 시 토스트 알림\r\n";
-    text += L"- 복사/붙여넣기 단축키 변경 및 초기화\r\n";
-    text += L"- '모든 클립 삭제'는 저장된 기록만 지우며 앱 설정은 유지합니다.\r\n";
-    text += L"- 단축키 변경은 설정 창을 닫을 때 적용됩니다.\r\n\r\n";
-
-    text += L"[트레이]\r\n";
-    text += L"- 트레이 아이콘 더블클릭 또는 '클립보드 열기'로 오버레이를 열 수 있습니다.\r\n";
-    text += L"- 트레이 메뉴에서 설정, 도움말, 앱 종료를 사용할 수 있습니다.\r\n";
-
+    std::wstring text = Tr(Str::HelpBody);
+    text = ReplaceAll(std::move(text), L"{copy}", GetCopyLabel(settings));
+    text = ReplaceAll(std::move(text), L"{paste}", GetPasteLabel(settings));
     return text;
 }
 
@@ -214,7 +172,7 @@ LRESULT CALLBACK HelpWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HELP_BODY)), nullptr, nullptr);
 
         ctx->close = CreateWindowExW(
-            0, L"BUTTON", L"닫기",
+            0, L"BUTTON", Tr(Str::HelpClose),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
             0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HELP_CLOSE)), nullptr, nullptr);
 
@@ -330,7 +288,7 @@ void ShowHelpWindow(HINSTANCE hInst, HWND hParent, const AppSettings& settings)
     HWND hwnd = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
         kHelpClassName,
-        L"ClipEverything 도움말",
+        Tr(Str::HelpTitle),
         WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,
         rc.left, rc.top,
         rc.right - rc.left,

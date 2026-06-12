@@ -23,12 +23,15 @@ This is not a polished finished product yet. It is a working prototype that I am
 - Native Windows desktop app
 - Global copy and paste hotkeys
 - Clipboard history storage with duplicate detection
+- Automatic history retention: the most recent 1,000 non-favorite items are kept; older ones are pruned automatically (favorites are never deleted)
+- Sensitive-content exclusion: clips flagged by password managers (e.g. `ExcludeClipboardContentFromMonitorProcessing`) are never stored
 - Multiple clipboard formats, including text, files, and images
 - Source application tracking and context-aware history filtering
 - Content type detection for text, rich text, HTML, Excel-like data, HWP-like data, and images
 - Local SQLite storage
 - Overlay UI for searching, selecting, and pasting clips
 - Rename, favorite, and tag editing for saved items
+- Korean and English UI (follows the system language by default, switchable in Settings)
 - System tray menu
 - Startup registration
 - Scripts for portable packages and a simple installer
@@ -98,6 +101,8 @@ Default data location:
 ```
 
 Settings and the clipboard database are stored there.
+
+Default hotkeys are `Win+Ctrl+C` (copy and save) and `Win+Ctrl+V` (open paste overlay). Both can be changed in Settings; existing installs keep whatever hotkeys are already saved in `settings.json`.
 
 ## Packaging
 

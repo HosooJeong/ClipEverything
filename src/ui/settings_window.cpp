@@ -1,5 +1,6 @@
 #include "settings_window.h"
 #include "../services/startup_service.h"
+#include "../services/localization.h"
 #include "../resources/resource.h"
 #include <commctrl.h>
 #include <algorithm>
@@ -17,10 +18,10 @@ static constexpr wchar_t kClass[] = L"ClipEverythingSettings";
 
 namespace {
 constexpr int kWindowWidthBase  = 428;
-constexpr int kWindowHeightBase = 368;
+constexpr int kWindowHeightBase = 422;
 constexpr int kOuterPadBase     = 12;
 constexpr int kSectionGapBase   = 10;
-constexpr int kGeneralHeightBase = 76;
+constexpr int kGeneralHeightBase = 130;
 constexpr int kHotkeyHeightBase  = 104;
 constexpr int kDataHeightBase    = 72;
 constexpr int kFooterHeightBase  = 28;
@@ -47,6 +48,9 @@ struct SettingsCtx {
     HWND hGeneralGroup = nullptr;
     HWND hStartupCheck = nullptr;
     HWND hToastCheck   = nullptr;
+    HWND hOpenOverlayCheck = nullptr;
+    HWND hLangLabel    = nullptr;
+    HWND hLangCombo    = nullptr;
 
     HWND hHotkeyGroup = nullptr;
     HWND hCopyLabel   = nullptr;
@@ -100,7 +104,8 @@ static void RecreateFonts(SettingsCtx* ctx)
 static void ApplyControlFonts(const SettingsCtx* ctx)
 {
     const HWND bodyControls[] = {
-        ctx->hGeneralGroup, ctx->hStartupCheck, ctx->hToastCheck,
+        ctx->hGeneralGroup, ctx->hStartupCheck, ctx->hToastCheck, ctx->hOpenOverlayCheck,
+        ctx->hLangLabel, ctx->hLangCombo,
         ctx->hHotkeyGroup, ctx->hCopyLabel, ctx->hCopyEdit, ctx->hCopyReset,
         ctx->hPasteLabel, ctx->hPasteEdit, ctx->hPasteReset,
         ctx->hDataGroup, ctx->hDataNote, ctx->hClearAll,
@@ -185,6 +190,20 @@ static void LayoutControls(SettingsCtx* ctx, int clientW, int clientH)
     SetWindowPos(ctx->hToastCheck, nullptr,
                  checkboxX, ctx->generalRect.top + S(ctx, 44),
                  checkboxW, S(ctx, 20),
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(ctx->hOpenOverlayCheck, nullptr,
+                 checkboxX, ctx->generalRect.top + S(ctx, 66),
+                 checkboxW, S(ctx, 20),
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+
+    const int langLabelW = S(ctx, 84);
+    SetWindowPos(ctx->hLangLabel, nullptr,
+                 checkboxX, ctx->generalRect.top + S(ctx, 94),
+                 langLabelW, S(ctx, 20),
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(ctx->hLangCombo, nullptr,
+                 checkboxX + langLabelW + S(ctx, 8), ctx->generalRect.top + S(ctx, 90),
+                 S(ctx, 170), S(ctx, 200),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
     SetWindowPos(ctx->hHotkeyGroup, nullptr,
@@ -272,7 +291,7 @@ static LRESULT CALLBACK HotkeyEditSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARA
 
     switch (msg) {
         case WM_SETFOCUS:
-            SetWindowTextW(hwnd, L"키를 누르세요...");
+            SetWindowTextW(hwnd, Tr(Str::SettingsPressKey));
             captured = false;
             return 0;
 
@@ -350,45 +369,92 @@ static HWND MakeControl(SettingsCtx* ctx, HWND hwnd, const wchar_t* cls, const w
         hwnd, id ? (HMENU)(UINT_PTR)id : nullptr, ctx->hInst, nullptr);
 }
 
+// 언어 콤보 항목을 현재 언어로 다시 채우고 설정값에 맞게 선택
+static void RefreshLanguageCombo(SettingsCtx* ctx)
+{
+    if (!ctx->hLangCombo) return;
+
+    SendMessageW(ctx->hLangCombo, CB_RESETCONTENT, 0, 0);
+    SendMessageW(ctx->hLangCombo, CB_ADDSTRING, 0,
+                 reinterpret_cast<LPARAM>(Tr(Str::SettingsLangSystem)));
+    SendMessageW(ctx->hLangCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"한국어"));
+    SendMessageW(ctx->hLangCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"English"));
+
+    int sel = 0;
+    switch (ParseLanguageSetting(ctx->settings->language)) {
+        case AppLanguage::Korean:  sel = 1; break;
+        case AppLanguage::English: sel = 2; break;
+        default:                   sel = 0; break;
+    }
+    SendMessageW(ctx->hLangCombo, CB_SETCURSEL, sel, 0);
+}
+
+// 창 제목과 모든 컨트롤 텍스트를 현재 언어로 적용 (언어 변경 시 즉시 반영)
+static void ApplyLocalizedTexts(HWND hwnd, SettingsCtx* ctx)
+{
+    SetWindowTextW(hwnd, Tr(Str::SettingsTitle));
+    SetWindowTextW(ctx->hGeneralGroup, Tr(Str::SettingsGeneral));
+    SetWindowTextW(ctx->hStartupCheck, Tr(Str::SettingsStartup));
+    SetWindowTextW(ctx->hToastCheck, Tr(Str::SettingsToast));
+    SetWindowTextW(ctx->hOpenOverlayCheck, Tr(Str::SettingsOpenOverlay));
+    SetWindowTextW(ctx->hLangLabel, Tr(Str::SettingsLanguage));
+    SetWindowTextW(ctx->hHotkeyGroup, Tr(Str::SettingsHotkeys));
+    SetWindowTextW(ctx->hCopyLabel, Tr(Str::SettingsCopy));
+    SetWindowTextW(ctx->hCopyReset, Tr(Str::SettingsReset));
+    SetWindowTextW(ctx->hPasteLabel, Tr(Str::SettingsPaste));
+    SetWindowTextW(ctx->hPasteReset, Tr(Str::SettingsReset));
+    SetWindowTextW(ctx->hDataGroup, Tr(Str::SettingsData));
+    SetWindowTextW(ctx->hDataNote, Tr(Str::SettingsDataNote));
+    SetWindowTextW(ctx->hClearAll, Tr(Str::SettingsClearAll));
+    SetWindowTextW(ctx->hFooterNote, Tr(Str::SettingsFooterNote));
+    SetWindowTextW(ctx->hClose, Tr(Str::SettingsCloseBtn));
+    RefreshLanguageCombo(ctx);
+}
+
 static void CreateControls(HWND hwnd, SettingsCtx* ctx)
 {
-    ctx->hGeneralGroup = MakeControl(ctx, hwnd, L"BUTTON", L"일반", BS_GROUPBOX, 0, 0);
-    ctx->hStartupCheck = MakeControl(ctx, hwnd, L"BUTTON", L"Windows 시작 시 자동 실행",
+    ctx->hGeneralGroup = MakeControl(ctx, hwnd, L"BUTTON", L"", BS_GROUPBOX, 0, 0);
+    ctx->hStartupCheck = MakeControl(ctx, hwnd, L"BUTTON", L"",
                                      BS_AUTOCHECKBOX | WS_TABSTOP, 0, IDC_STARTUP_CHECK);
-    ctx->hToastCheck = MakeControl(ctx, hwnd, L"BUTTON", L"복사 시 토스트 알림",
+    ctx->hToastCheck = MakeControl(ctx, hwnd, L"BUTTON", L"",
                                    BS_AUTOCHECKBOX | WS_TABSTOP, 0, IDC_TOAST_CHECK);
+    ctx->hOpenOverlayCheck = MakeControl(ctx, hwnd, L"BUTTON", L"",
+                                         BS_AUTOCHECKBOX | WS_TABSTOP, 0, IDC_OPEN_OVERLAY_CHECK);
+    ctx->hLangLabel = MakeControl(ctx, hwnd, L"STATIC", L"", SS_LEFT, 0, 0);
+    ctx->hLangCombo = MakeControl(ctx, hwnd, L"COMBOBOX", L"",
+                                  CBS_DROPDOWNLIST | WS_TABSTOP, 0, IDC_LANGUAGE_COMBO);
 
-    ctx->hHotkeyGroup = MakeControl(ctx, hwnd, L"BUTTON", L"단축키", BS_GROUPBOX, 0, 0);
-    ctx->hCopyLabel = MakeControl(ctx, hwnd, L"STATIC", L"복사", SS_LEFT, 0, 0);
+    ctx->hHotkeyGroup = MakeControl(ctx, hwnd, L"BUTTON", L"", BS_GROUPBOX, 0, 0);
+    ctx->hCopyLabel = MakeControl(ctx, hwnd, L"STATIC", L"", SS_LEFT, 0, 0);
     ctx->hCopyEdit = MakeControl(ctx, hwnd, L"EDIT", ctx->settings->copyLabel.c_str(),
                                  ES_AUTOHSCROLL | ES_CENTER | ES_READONLY | WS_TABSTOP,
                                  WS_EX_CLIENTEDGE, IDC_HOTKEY_COPY);
-    ctx->hCopyReset = MakeControl(ctx, hwnd, L"BUTTON", L"초기화",
+    ctx->hCopyReset = MakeControl(ctx, hwnd, L"BUTTON", L"",
                                   BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_RESET_COPY);
-    ctx->hPasteLabel = MakeControl(ctx, hwnd, L"STATIC", L"붙여넣기", SS_LEFT, 0, 0);
+    ctx->hPasteLabel = MakeControl(ctx, hwnd, L"STATIC", L"", SS_LEFT, 0, 0);
     ctx->hPasteEdit = MakeControl(ctx, hwnd, L"EDIT", ctx->settings->pasteLabel.c_str(),
                                   ES_AUTOHSCROLL | ES_CENTER | ES_READONLY | WS_TABSTOP,
                                   WS_EX_CLIENTEDGE, IDC_HOTKEY_PASTE);
-    ctx->hPasteReset = MakeControl(ctx, hwnd, L"BUTTON", L"초기화",
+    ctx->hPasteReset = MakeControl(ctx, hwnd, L"BUTTON", L"",
                                    BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_RESET_PASTE);
 
-    ctx->hDataGroup = MakeControl(ctx, hwnd, L"BUTTON", L"데이터 관리", BS_GROUPBOX, 0, 0);
-    ctx->hDataNote = MakeControl(ctx, hwnd, L"STATIC",
-                                 L"저장된 클립 기록만 삭제합니다.\r\n앱 설정은 유지됩니다.",
-                                 SS_LEFT, 0, 0);
-    ctx->hClearAll = MakeControl(ctx, hwnd, L"BUTTON", L"모든 클립 삭제",
+    ctx->hDataGroup = MakeControl(ctx, hwnd, L"BUTTON", L"", BS_GROUPBOX, 0, 0);
+    ctx->hDataNote = MakeControl(ctx, hwnd, L"STATIC", L"", SS_LEFT, 0, 0);
+    ctx->hClearAll = MakeControl(ctx, hwnd, L"BUTTON", L"",
                                  BS_PUSHBUTTON | WS_TABSTOP, 0, IDC_CLEAR_ALL);
 
-    ctx->hFooterNote = MakeControl(ctx, hwnd, L"STATIC",
-                                   L"단축키 변경은 닫기 시 적용됩니다.",
-                                   SS_LEFT, 0, 0);
-    ctx->hClose = MakeControl(ctx, hwnd, L"BUTTON", L"닫기",
+    ctx->hFooterNote = MakeControl(ctx, hwnd, L"STATIC", L"", SS_LEFT, 0, 0);
+    ctx->hClose = MakeControl(ctx, hwnd, L"BUTTON", L"",
                               BS_DEFPUSHBUTTON | WS_TABSTOP, 0, IDC_SETTINGS_CLOSE);
+
+    ApplyLocalizedTexts(hwnd, ctx);
 
     CheckDlgButton(hwnd, IDC_STARTUP_CHECK,
                    IsStartupRegistered() ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hwnd, IDC_TOAST_CHECK,
                    ctx->settings->showToastNotifications ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hwnd, IDC_OPEN_OVERLAY_CHECK,
+                   ctx->settings->openOverlayAfterCopy ? BST_CHECKED : BST_UNCHECKED);
 
     SetWindowSubclass(ctx->hCopyEdit, HotkeyEditSubclass, IDC_HOTKEY_COPY, (DWORD_PTR)ctx);
     SetWindowSubclass(ctx->hPasteEdit, HotkeyEditSubclass, IDC_HOTKEY_PASTE, (DWORD_PTR)ctx);
@@ -466,38 +532,61 @@ static LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                     ctx->settings->Save();
                     break;
 
+                case IDC_OPEN_OVERLAY_CHECK:
+                    ctx->settings->openOverlayAfterCopy =
+                        IsDlgButtonChecked(hwnd, IDC_OPEN_OVERLAY_CHECK) == BST_CHECKED;
+                    ctx->settings->Save();
+                    break;
+
+                case IDC_LANGUAGE_COMBO:
+                    if (HIWORD(wp) == CBN_SELCHANGE) {
+                        const int sel = (int)SendMessageW(ctx->hLangCombo, CB_GETCURSEL, 0, 0);
+                        AppLanguage lang = AppLanguage::System;
+                        if (sel == 1) lang = AppLanguage::Korean;
+                        else if (sel == 2) lang = AppLanguage::English;
+
+                        ctx->settings->language = LanguageSettingToString(lang);
+                        ctx->settings->Save();
+                        SetAppLanguage(lang);
+                        // 설정 창 텍스트는 즉시 갱신, 나머지 UI는 다시 그릴 때 반영
+                        ApplyLocalizedTexts(hwnd, ctx);
+                    }
+                    break;
+
                 case IDC_CLEAR_ALL:
-                    if (MessageBoxW(hwnd, L"모든 클립보드 기록을 삭제하시겠습니까?",
-                                    L"확인", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                    if (MessageBoxW(hwnd, Tr(Str::SettingsClearConfirm),
+                                    Tr(Str::SettingsConfirmTitle),
+                                    MB_YESNO | MB_ICONQUESTION) == IDYES) {
                         ctx->repo->DeleteAll();
                     }
                     break;
 
                 case IDC_RESET_COPY:
-                    ctx->pendingConfig.copyMods  = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+                    ctx->pendingConfig.copyMods  = MOD_WIN | MOD_CONTROL | MOD_NOREPEAT;
                     ctx->pendingConfig.copyVk    = 'C';
-                    ctx->pendingConfig.copyLabel = L"Ctrl+Shift+C";
-                    SetDlgItemTextW(hwnd, IDC_HOTKEY_COPY, L"Ctrl+Shift+C");
+                    ctx->pendingConfig.copyLabel = L"Win+Ctrl+C";
+                    SetDlgItemTextW(hwnd, IDC_HOTKEY_COPY, L"Win+Ctrl+C");
                     ctx->capturedCopy = true;
                     break;
 
                 case IDC_RESET_PASTE:
-                    ctx->pendingConfig.pasteMods  = MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT;
+                    ctx->pendingConfig.pasteMods  = MOD_WIN | MOD_CONTROL | MOD_NOREPEAT;
                     ctx->pendingConfig.pasteVk    = 'V';
-                    ctx->pendingConfig.pasteLabel = L"Ctrl+Shift+V";
-                    SetDlgItemTextW(hwnd, IDC_HOTKEY_PASTE, L"Ctrl+Shift+V");
+                    ctx->pendingConfig.pasteLabel = L"Win+Ctrl+V";
+                    SetDlgItemTextW(hwnd, IDC_HOTKEY_PASTE, L"Win+Ctrl+V");
                     ctx->capturedPaste = true;
                     break;
 
                 case IDC_SETTINGS_CLOSE:
-                    if (ctx->onHotkeyChanged)
-                        ctx->onHotkeyChanged(ctx->pendingConfig);
-                    DestroyWindow(hwnd);
+                    SendMessageW(hwnd, WM_CLOSE, 0, 0);
                     break;
             }
             return 0;
 
+        // X 버튼·닫기 버튼 모두 같은 경로: 변경된 단축키를 적용하고 닫는다
         case WM_CLOSE:
+            if (ctx && ctx->onHotkeyChanged)
+                ctx->onHotkeyChanged(ctx->pendingConfig);
             DestroyWindow(hwnd);
             return 0;
 
@@ -547,7 +636,7 @@ void ShowSettingsWindow(HINSTANCE hInst, HWND hParent,
 
     HWND hwnd = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT | WS_EX_TOPMOST,
-        kClass, L"ClipEverything 설정",
+        kClass, Tr(Str::SettingsTitle),
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
         hParent, nullptr, hInst, ctx);

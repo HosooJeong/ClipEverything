@@ -36,10 +36,12 @@ AppSettings AppSettings::Load()
         if (!f.is_open()) return s;
         json j; f >> j;
         s.showToastNotifications = j.value("showToastNotifications", true);
+        s.openOverlayAfterCopy   = j.value("openOverlayAfterCopy",   true);
         s.runAtStartup           = j.value("runAtStartup",           false);
-        s.copyMods   = j.value("copyMods",   (UINT)(MOD_WIN | MOD_CONTROL));
+        s.language               = U8ToW(j.value("language", "system"));
+        s.copyMods   = j.value("copyMods",   (UINT)(MOD_WIN | MOD_CONTROL | MOD_NOREPEAT));
         s.copyVk     = j.value("copyVk",     (UINT)'C');
-        s.pasteMods  = j.value("pasteMods",  (UINT)(MOD_WIN | MOD_CONTROL));
+        s.pasteMods  = j.value("pasteMods",  (UINT)(MOD_WIN | MOD_CONTROL | MOD_NOREPEAT));
         s.pasteVk    = j.value("pasteVk",    (UINT)'V');
         s.copyLabel  = U8ToW(j.value("copyLabel",  "Win+Ctrl+C"));
         s.pasteLabel = U8ToW(j.value("pasteLabel", "Win+Ctrl+V"));
@@ -56,7 +58,9 @@ void AppSettings::Save() const
     try {
         json j;
         j["showToastNotifications"] = showToastNotifications;
+        j["openOverlayAfterCopy"]   = openOverlayAfterCopy;
         j["runAtStartup"]           = runAtStartup;
+        j["language"]               = WToU8(language);
         j["copyMods"]               = copyMods;
         j["copyVk"]                 = copyVk;
         j["pasteMods"]              = pasteMods;

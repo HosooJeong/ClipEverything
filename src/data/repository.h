@@ -19,6 +19,7 @@ public:
     // READ
     std::vector<ClipboardItem>   GetItems(const std::wstring& search = {},
                                           const std::wstring& app    = {});
+    std::optional<ClipboardItem> GetItemById(int64_t id);
     std::vector<ClipboardFormat> GetFormats(int64_t itemId);
 
     // UPDATE
@@ -37,9 +38,11 @@ private:
     sqlite3_stmt* _stmtInsert   = nullptr;
     sqlite3_stmt* _stmtFindHash = nullptr;
 
-    void Execute(const char* sql);
+    bool Execute(const char* sql);
     int64_t FindByHash(const std::string& hash);
     int64_t InsertItem(const ClipboardSnapshot& snap, const SourceInfo& src, const std::string& now);
+    void EnforceRetentionLimit();
+    static ClipboardItem ReadItemRow(sqlite3_stmt* stmt);
 
     // wstring ↔ UTF-8 변환
     static std::string ToUtf8(const std::wstring& ws);

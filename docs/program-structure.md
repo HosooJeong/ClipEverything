@@ -77,6 +77,8 @@ DB 구조는 크게 두 테이블로 나뉜다.
   복사 핫키와 붙여넣기 핫키 흐름을 묶는 핵심 서비스
 - `src/services/app_settings.*`
   `%APPDATA%\ClipEverything\settings.json` 기반 설정 로드/저장
+- `src/services/localization.*`
+  한국어/영어 UI 문자열 테이블과 표시 언어 결정 (시스템 기본값/ko/en)
 - `src/services/startup_service.*`
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 레지스트리에 자동 시작 등록/해제
 - `src/services/tray_service.*`
@@ -92,11 +94,7 @@ DB 구조는 크게 두 테이블로 나뉜다.
   메인 오버레이 UI
   검색창, 카드 목록, 컨텍스트 메뉴, 선택 후 붙여넣기 실행 담당
 - `src/ui/settings_window.*`
-  시작 프로그램, 토스트 알림, 핫키 변경, 전체 삭제 설정창
-- `src/ui/rename_dialog.*`
-  항목 이름 변경 다이얼로그
-- `src/ui/tag_dialog.*`
-  태그 편집 다이얼로그
+  시작 프로그램, 토스트 알림, 복사 후 동작, 언어, 핫키 변경, 전체 삭제 설정창
 - `src/ui/toast_popup.*`
   우하단 토스트 표시용 레이어드 윈도우
 - `src/ui/render/d2d_context.*`

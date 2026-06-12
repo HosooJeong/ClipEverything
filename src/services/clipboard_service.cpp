@@ -49,18 +49,38 @@ void ClipboardService::OnCopyHotkey()
     // 2. Win/Ctrl 물리 키 해제 대기 후 Ctrl+C 시뮬레이션
     //    (SimulateCtrl 내부에서 먼저 LWin/Ctrl UP을 주입하지만,
     //     SendInput이 비동기이므로 20ms 여유를 준다)
+    const DWORD seqBefore = GetClipboardSequenceNumber();
     Sleep(20);
     SimulateCtrlC();
 
-    // 3. 클립보드 변경 대기
-    Sleep(100);
+    // 3. 클립보드가 실제로 갱신될 때까지 대기 (최대 500ms).
+    //    고정 대기는 느린 앱(Excel 대용량 범위 등)에서 이전 내용을 캡처하는
+    //    레이스가 있었음. 갱신이 없으면(선택 없음 등) 저장하지 않는다.
+    bool changed = false;
+    for (int i = 0; i < 50; ++i) {
+        Sleep(10);
+        if (GetClipboardSequenceNumber() != seqBefore) {
+            changed = true;
+            break;
+        }
+    }
+    if (!changed) return;
+
+    // 시퀀스가 바뀐 직후에도 일부 앱은 포맷을 추가 중일 수 있어 짧게 추가 대기
+    Sleep(30);
 
     // 4. 클립보드 스냅샷 (STA 메인 스레드에서 실행 중)
-    auto snap = TakeSnapshot();
+    bool excludedSensitive = false;
+    auto snap = TakeSnapshot(&excludedSensitive);
+    if (excludedSensitive) {
+        if (OnSensitiveSkipped) OnSensitiveSkipped();
+        return;
+    }
     if (!snap) return;
 
-    // 5. DB 저장
+    // 5. DB 저장 (실패 시 0 — 트랜잭션이 롤백된 경우)
     int64_t itemId = _repo.SaveOrUpdate(*snap, src);
+    if (itemId <= 0) return;
 
     // 6. UI 알림
     if (OnItemCaptured) OnItemCaptured(itemId, src);
@@ -88,9 +108,10 @@ void ClipboardService::PasteSelectedItem(int64_t itemId)
     // 2. 클립보드 복원
     if (!RestoreToClipboard(clipFmts)) return;
 
-    // 3. 원래 창 포커스 복원
-    if (_pendingTarget.hwnd)
-        SetForegroundWindow(_pendingTarget.hwnd);
+    // 3. 원래 창 포커스 복원 — 타깃이 유효하지 않으면 임의 창에 주입하지 않는다
+    if (!_pendingTarget.hwnd || !IsWindow(_pendingTarget.hwnd))
+        return;
+    SetForegroundWindow(_pendingTarget.hwnd);
     Sleep(50);
 
     // 4. Ctrl+V 시뮬레이션

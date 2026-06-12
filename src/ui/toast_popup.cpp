@@ -1,5 +1,6 @@
 #include "toast_popup.h"
 #include "../resources/resource.h"
+#include "../services/localization.h"
 #include "theme.h"
 #include "render/d2d_context.h"
 #include <d2d1.h>
@@ -25,8 +26,8 @@ static void RenderToast(HWND hwnd, ToastData* td, int alpha)
     RECT rc; GetClientRect(hwnd, &rc);
     int w = rc.right, h = rc.bottom;
 
-    HDC hdc = GetDC(hwnd);
-    HDC memDC = CreateCompatibleDC(hdc);
+    HDC hdcScreen = GetDC(nullptr);
+    HDC memDC = CreateCompatibleDC(hdcScreen);
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth       = w;
@@ -36,7 +37,12 @@ static void RenderToast(HWND hwnd, ToastData* td, int alpha)
     bmi.bmiHeader.biCompression = BI_RGB;
     void* bits = nullptr;
     HBITMAP hBmp = CreateDIBSection(memDC, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    SelectObject(memDC, hBmp);
+    if (!hBmp) {
+        DeleteDC(memDC);
+        ReleaseDC(nullptr, hdcScreen);
+        return;
+    }
+    HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
 
     // Direct2D DC 렌더링
     auto& ctx = D2DContext::Get();
@@ -80,16 +86,14 @@ static void RenderToast(HWND hwnd, ToastData* td, int alpha)
     POINT ptSrc = { 0, 0 };
     SIZE sz = { w, h };
     BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)alpha, AC_SRC_ALPHA };
-    POINT ptDest = {};
-    GetWindowRect(hwnd, reinterpret_cast<RECT*>(&ptDest));  // 실제로는 별도 계산
-    POINT wndPos = {};
     RECT wr; GetWindowRect(hwnd, &wr);
-    wndPos = { wr.left, wr.top };
-    UpdateLayeredWindow(hwnd, GetDC(nullptr), &wndPos, &sz, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
+    POINT wndPos = { wr.left, wr.top };
+    UpdateLayeredWindow(hwnd, hdcScreen, &wndPos, &sz, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
 
+    SelectObject(memDC, oldBmp);
     DeleteObject(hBmp);
     DeleteDC(memDC);
-    ReleaseDC(hwnd, hdc);
+    ReleaseDC(nullptr, hdcScreen);
 }
 
 static LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -155,7 +159,7 @@ bool RegisterToastClass(HINSTANCE hInst)
     return RegisterClassExW(&wc) != 0;
 }
 
-void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
+void ShowToastMessage(HINSTANCE hInst, const std::wstring& title, const std::wstring& subtitle)
 {
     // 기존 토스트 제거
     if (g_currentToast) { DestroyWindow(g_currentToast); g_currentToast = nullptr; }
@@ -167,8 +171,8 @@ void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
 
     auto* td = new ToastData();
     td->hInst    = hInst;
-    td->title    = item.sourceApp + L"에서 복사됨";
-    td->subtitle = item.DisplayName();
+    td->title    = title;
+    td->subtitle = subtitle;
     if (td->subtitle.length() > 45) td->subtitle = td->subtitle.substr(0, 42) + L"...";
 
     g_currentToast = CreateWindowExW(
@@ -178,4 +182,10 @@ void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
         nullptr, nullptr, hInst, td);
 
     if (g_currentToast) ShowWindow(g_currentToast, SW_SHOWNOACTIVATE);
+}
+
+void ShowToastPopup(HINSTANCE hInst, const ClipboardItem& item)
+{
+    ShowToastMessage(hInst, TrFmt(Str::ToastCopiedFromFmt, item.sourceApp),
+                     item.DisplayName());
 }

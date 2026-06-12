@@ -12,6 +12,7 @@ public:
     // 콜백
     std::function<void()>                          OnPasteRequested;
     std::function<void(int64_t, const SourceInfo&)> OnItemCaptured;
+    std::function<void()>                          OnSensitiveSkipped; // 비밀번호 매니저 등 저장 제외
 
     ClipboardService(Repository& repo, AppSettings& settings);
 

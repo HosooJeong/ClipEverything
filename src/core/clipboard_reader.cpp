@@ -77,11 +77,41 @@ struct SerializedPaletteHeader {
 
 static bool ShouldSkip(UINT fmt)
 {
+    // CF_BITMAP/CF_OEMTEXT는 CF_DIB/CF_TEXT에서 합성되는 포맷이라 원본만 저장
     switch (fmt) {
         case CF_BITMAP:
-        case CF_HDROP:
         case CF_OEMTEXT:
             return true;
+    }
+    return false;
+}
+
+// 비밀번호 매니저 등이 "클립보드 기록 도구는 저장하지 마라"고 알리는 표준 신호.
+// 클립보드가 이미 열린 상태에서 호출해야 한다.
+static bool HasSensitiveExclusionSignal()
+{
+    static const UINT fmtExclude =
+        RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+    static const UINT fmtIgnore =
+        RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
+    static const UINT fmtCanInclude =
+        RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+
+    if (IsClipboardFormatAvailable(fmtExclude) ||
+        IsClipboardFormatAvailable(fmtIgnore))
+        return true;
+
+    // CanIncludeInClipboardHistory: DWORD 0이면 기록 제외 요청
+    if (IsClipboardFormatAvailable(fmtCanInclude)) {
+        if (HANDLE hData = GetClipboardData(fmtCanInclude)) {
+            if (GlobalSize(hData) >= sizeof(DWORD)) {
+                if (auto* value = static_cast<const DWORD*>(GlobalLock(hData))) {
+                    const bool excluded = (*value == 0);
+                    GlobalUnlock(hData);
+                    return excluded;
+                }
+            }
+        }
     }
     return false;
 }
@@ -253,6 +283,50 @@ static std::optional<std::string> ComputeFileDropHash()
     return ComputeSha256(joined.data(), joined.size() * sizeof(wchar_t));
 }
 
+// CF_UNICODETEXT 데이터에서 nul 종료 전까지의 텍스트를 돌려준다.
+static std::wstring GetUnicodeText(const std::vector<RawClipboardFormat>& fmts)
+{
+    for (const auto& f : fmts) {
+        if (f.formatId != CF_UNICODETEXT) continue;
+        if (f.data.size() < sizeof(wchar_t)) return {};
+
+        const wchar_t* chars = reinterpret_cast<const wchar_t*>(f.data.data());
+        const size_t maxChars = f.data.size() / sizeof(wchar_t);
+        size_t len = 0;
+        while (len < maxChars && chars[len] != L'\0') ++len;
+        return std::wstring(chars, len);
+    }
+    return {};
+}
+
+static std::wstring MakePreviewText(const std::wstring& text)
+{
+    constexpr size_t kMaxPreview = 512;
+
+    const size_t start = text.find_first_not_of(L" \t\r\n");
+    if (start == std::wstring::npos) return {};
+
+    std::wstring preview = text.substr(start, kMaxPreview);
+    const size_t end = preview.find_last_not_of(L" \t\r\n");
+    if (end != std::wstring::npos) preview.resize(end + 1);
+    return preview;
+}
+
+// 텍스트 클립은 텍스트만으로 해시 — 서식·로캘 등 부수 포맷 차이로
+// 같은 내용이 중복 저장되는 것을 막는다.
+static std::string ComputeTextHash(const std::wstring& text)
+{
+    Sha256State sha;
+    if (!sha.valid) return {};
+
+    static constexpr char kPrefix[] = "unicode-text\n";
+    if (!sha.Update(kPrefix, sizeof(kPrefix) - 1)) return {};
+    if (!text.empty() &&
+        !sha.Update(text.data(), text.size() * sizeof(wchar_t)))
+        return {};
+    return sha.Finish();
+}
+
 static std::string ComputeFormatsHash(const std::vector<RawClipboardFormat>& formats)
 {
     Sha256State sha;
@@ -280,30 +354,93 @@ static std::string ComputeFormatsHash(const std::vector<RawClipboardFormat>& for
     return sha.Finish();
 }
 
+// 클립보드 DIB는 다른 프로세스가 만든 비신뢰 데이터 — 헤더를 검증하고
+// 검증된 치수로 계산한 픽셀 크기(pixelBytes)만큼만 복사한다.
+// 썸네일 용도이므로 비압축(BI_RGB/BI_BITFIELDS) 비트맵만 지원한다.
+static bool ValidateDib(const uint8_t* dibData, size_t dibSize,
+                        DWORD& pixelOffset, size_t& pixelBytes)
+{
+    if (!dibData || dibSize < sizeof(BITMAPINFOHEADER))
+        return false;
+
+    const BITMAPINFOHEADER* bih = reinterpret_cast<const BITMAPINFOHEADER*>(dibData);
+    if (bih->biSize < sizeof(BITMAPINFOHEADER) || bih->biSize > dibSize)
+        return false;
+    if (bih->biPlanes != 1)
+        return false;
+    if (bih->biWidth <= 0 || bih->biWidth > 32768 ||
+        bih->biHeight == 0 || bih->biHeight > 32768 || bih->biHeight < -32768)
+        return false;
+
+    switch (bih->biBitCount) {
+        case 1: case 4: case 8: case 16: case 24: case 32:
+            break;
+        default:
+            return false;
+    }
+
+    if (bih->biCompression != BI_RGB && bih->biCompression != BI_BITFIELDS)
+        return false;
+    if (bih->biCompression == BI_BITFIELDS &&
+        bih->biBitCount != 16 && bih->biBitCount != 32)
+        return false;
+
+    uint64_t offset = bih->biSize;
+    if (bih->biClrUsed > 0) {
+        if (bih->biClrUsed > 256) return false;
+        offset += static_cast<uint64_t>(bih->biClrUsed) * 4;
+    } else if (bih->biBitCount <= 8) {
+        offset += (1ull << bih->biBitCount) * 4;
+    }
+    // BI_BITFIELDS 마스크 3개(12바이트)는 BITMAPINFOHEADER(40바이트) 뒤에만
+    // 별도로 붙는다. V2/V3/V4/V5 등 더 큰 헤더는 마스크를 헤더 안에 포함한다.
+    if (bih->biCompression == BI_BITFIELDS && bih->biSize == sizeof(BITMAPINFOHEADER))
+        offset += 12;
+
+    if (offset >= dibSize)
+        return false;
+
+    // DWORD 정렬 stride × 행 수 = CreateDIBSection이 할당하는 픽셀 버퍼 크기
+    const uint64_t stride =
+        ((static_cast<uint64_t>(bih->biWidth) * bih->biBitCount + 31) / 32) * 4;
+    const uint64_t rows = static_cast<uint64_t>(
+        bih->biHeight < 0 ? -static_cast<int64_t>(bih->biHeight) : bih->biHeight);
+    const uint64_t expected = stride * rows;
+
+    // 클립보드 데이터에 기대 크기만큼의 픽셀이 실제로 있어야 한다
+    if (expected == 0 || expected > dibSize - offset)
+        return false;
+
+    pixelOffset = static_cast<DWORD>(offset);
+    pixelBytes = static_cast<size_t>(expected);
+    return true;
+}
+
 static std::vector<uint8_t> MakeThumbnail(const uint8_t* dibData, size_t dibSize)
 {
+    DWORD pixelOffset = 0;
+    size_t pixelBytes = 0;
+    if (!ValidateDib(dibData, dibSize, pixelOffset, pixelBytes))
+        return {};
+
     IWICImagingFactory* pFactory = nullptr;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                                 IID_IWICImagingFactory, reinterpret_cast<void**>(&pFactory))))
         return {};
 
-    const BITMAPINFOHEADER* bih = reinterpret_cast<const BITMAPINFOHEADER*>(dibData);
     BITMAPINFO* bmi = reinterpret_cast<BITMAPINFO*>(const_cast<uint8_t*>(dibData));
 
     HDC hdc = GetDC(nullptr);
     void* bits = nullptr;
     HBITMAP hBmp = CreateDIBSection(hdc, bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
     ReleaseDC(nullptr, hdc);
-    if (!hBmp) {
+    if (!hBmp || !bits) {
+        if (hBmp) DeleteObject(hBmp);
         pFactory->Release();
         return {};
     }
 
-    DWORD pixelOffset = bih->biSize;
-    if (bih->biClrUsed > 0) pixelOffset += bih->biClrUsed * 4;
-    else if (bih->biBitCount <= 8) pixelOffset += (1u << bih->biBitCount) * 4;
-    if (pixelOffset < dibSize)
-        memcpy(bits, dibData + pixelOffset, dibSize - pixelOffset);
+    memcpy(bits, dibData + pixelOffset, pixelBytes);
 
     IWICBitmap* pBitmap = nullptr;
     pFactory->CreateBitmapFromHBITMAP(hBmp, nullptr, WICBitmapUseAlpha, &pBitmap);
@@ -314,33 +451,40 @@ static std::vector<uint8_t> MakeThumbnail(const uint8_t* dibData, size_t dibSize
         return {};
     }
 
+    std::vector<uint8_t> png;
     IWICBitmapScaler* pScaler = nullptr;
-    pFactory->CreateBitmapScaler(&pScaler);
-    pScaler->Initialize(pBitmap, 40, 40, WICBitmapInterpolationModeFant);
-
-    IStream* pStream = SHCreateMemStream(nullptr, 0);
+    IStream* pStream = nullptr;
     IWICBitmapEncoder* pEnc = nullptr;
     IWICBitmapFrameEncode* pFrame = nullptr;
-    pFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &pEnc);
-    pEnc->Initialize(pStream, WICBitmapEncoderNoCache);
-    pEnc->CreateNewFrame(&pFrame, nullptr);
-    pFrame->Initialize(nullptr);
-    pFrame->WriteSource(pScaler, nullptr);
-    pFrame->Commit();
-    pEnc->Commit();
 
-    STATSTG stat{};
-    pStream->Stat(&stat, STATFLAG_NONAME);
-    std::vector<uint8_t> png(static_cast<size_t>(stat.cbSize.QuadPart));
-    LARGE_INTEGER li{};
-    pStream->Seek(li, STREAM_SEEK_SET, nullptr);
-    ULONG read = 0;
-    pStream->Read(png.data(), static_cast<ULONG>(png.size()), &read);
+    bool ok = SUCCEEDED(pFactory->CreateBitmapScaler(&pScaler)) &&
+              SUCCEEDED(pScaler->Initialize(pBitmap, 40, 40, WICBitmapInterpolationModeFant)) &&
+              (pStream = SHCreateMemStream(nullptr, 0)) != nullptr &&
+              SUCCEEDED(pFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &pEnc)) &&
+              SUCCEEDED(pEnc->Initialize(pStream, WICBitmapEncoderNoCache)) &&
+              SUCCEEDED(pEnc->CreateNewFrame(&pFrame, nullptr)) &&
+              SUCCEEDED(pFrame->Initialize(nullptr)) &&
+              SUCCEEDED(pFrame->WriteSource(pScaler, nullptr)) &&
+              SUCCEEDED(pFrame->Commit()) &&
+              SUCCEEDED(pEnc->Commit());
 
-    pFrame->Release();
-    pEnc->Release();
-    pStream->Release();
-    pScaler->Release();
+    if (ok) {
+        STATSTG stat{};
+        if (SUCCEEDED(pStream->Stat(&stat, STATFLAG_NONAME)) && stat.cbSize.QuadPart > 0) {
+            png.resize(static_cast<size_t>(stat.cbSize.QuadPart));
+            LARGE_INTEGER li{};
+            pStream->Seek(li, STREAM_SEEK_SET, nullptr);
+            ULONG read = 0;
+            if (FAILED(pStream->Read(png.data(), static_cast<ULONG>(png.size()), &read)) ||
+                read != png.size())
+                png.clear();
+        }
+    }
+
+    if (pFrame)  pFrame->Release();
+    if (pEnc)    pEnc->Release();
+    if (pStream) pStream->Release();
+    if (pScaler) pScaler->Release();
     pBitmap->Release();
     pFactory->Release();
     return png;
@@ -373,9 +517,17 @@ static ContentType DetectContentType(const std::vector<RawClipboardFormat>& fmts
 
 } // namespace
 
-std::optional<ClipboardSnapshot> TakeSnapshot()
+std::optional<ClipboardSnapshot> TakeSnapshot(bool* excludedSensitive)
 {
+    if (excludedSensitive) *excludedSensitive = false;
+
     if (!OpenClipboard(nullptr)) return std::nullopt;
+
+    if (HasSensitiveExclusionSignal()) {
+        CloseClipboard();
+        if (excludedSensitive) *excludedSensitive = true;
+        return std::nullopt;
+    }
 
     ClipboardSnapshot snap;
     std::vector<uint8_t> dibData;
@@ -422,8 +574,18 @@ std::optional<ClipboardSnapshot> TakeSnapshot()
 
     if (snap.formats.empty()) return std::nullopt;
 
+    const std::wstring unicodeText = GetUnicodeText(snap.formats);
+    snap.previewText = MakePreviewText(unicodeText);
+
+    // 해시 우선순위: 파일 목록 > 텍스트 내용 > 전체 포맷 바이트
+    std::string textHash;
+    if (!unicodeText.empty())
+        textHash = ComputeTextHash(unicodeText);
+
     if (fileDropHash && !fileDropHash->empty()) {
         snap.contentHash = *fileDropHash;
+    } else if (!textHash.empty()) {
+        snap.contentHash = textHash;
     } else {
         snap.contentHash = ComputeFormatsHash(snap.formats);
     }

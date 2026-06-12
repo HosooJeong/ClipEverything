@@ -1,4 +1,5 @@
 #include "tray_service.h"
+#include "localization.h"
 #include "../resources/resource.h"
 
 #pragma comment(lib, "shell32.lib")
@@ -60,11 +61,11 @@ void TrayService::HandleTrayMessage(LPARAM lParam)
     case WM_RBUTTONUP:
     case WM_CONTEXTMENU: {
         HMENU hMenu = CreatePopupMenu();
-        AppendMenuW(hMenu, MF_STRING, ID_TRAY_OPEN, L"\uD074\uB9BD\uBCF4\uB4DC \uC5F4\uAE30");
-        AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, L"\uC124\uC815");
-        AppendMenuW(hMenu, MF_STRING, ID_TRAY_HELP, L"\uB3C4\uC6C0\uB9D0");
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_OPEN, Tr(Str::TrayOpen));
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_SETTINGS, Tr(Str::TraySettings));
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_HELP, Tr(Str::TrayHelp));
         AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"\uC571 \uC885\uB8CC");
+        AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, Tr(Str::TrayExit));
 
         POINT pt{};
         GetCursorPos(&pt);
