@@ -2,26 +2,36 @@
 
 English · [한국어](README.ko.md)
 
-ClipEverything is a native Windows x64 launcher for the clipboard items you paste repeatedly. Save a selection once, give it a name or capture a visual preview, and place it on the board for its source application. ClipEverything stores the available clipboard formats in a local SQLite database so text, tables, images, and file selections can be restored to compatible applications.
+**Save once. Paste whenever you need it.** ClipEverything is a Windows x64 app for the phrases, tables, formatting, images, and file selections you use again and again. Give each clip a name, keep it on its source application's board, and call it up with a shortcut.
 
-## Install or run
+![ClipEverything 0.6.12 showing an Excel board with named clips and a sidebar for switching programs](docs/screenshots/v0.6.12-board-en.png)
 
-[Download ClipEverything for Windows](https://github.com/HosooJeong/ClipEverything/releases/latest)
+## Download
 
-| Download | Use |
+**New to ClipEverything? Start with the MSI.** Open the downloaded file, keep the default options for a quick start, and click the finish button to open the board.
+
+| File | How to start |
 | --- | --- |
-| `ClipEverything.msi` | Install for the current user. Choose the install folder, shortcuts, startup and tray behavior, and hotkeys. |
-| `ClipEverything.exe` | Run directly using your Windows user profile. |
-| `ClipEverything-portable.zip` | Extract the whole ZIP to a writable folder. The included `portable.flag` enables storage beside the executable. |
+| [ClipEverything.msi](https://github.com/HosooJeong/ClipEverything/releases/latest/download/ClipEverything.msi) | Windows x64 installer. You can choose shortcuts, sign-in startup, and tray behavior. |
+| [ClipEverything.exe](https://github.com/HosooJeong/ClipEverything/releases/latest/download/ClipEverything.exe) | Run the EXE directly. It uses your Windows user profile for storage. |
+| [ClipEverything-portable.zip](https://github.com/HosooJeong/ClipEverything/releases/latest/download/ClipEverything-portable.zip) | Extract the entire ZIP to a writable folder and run `ClipEverything.exe`. Keep `portable.flag` beside the EXE to store records there. |
 
-## Everyday use
+## Save and paste your first clip
 
-- Select content in an application and press **Ctrl+Alt+C** to register it. Enter a name, add tags, or take a screenshot for the preview.
-- Press **Ctrl+Alt+V** in the destination application to open its board. Click an item or select it with the arrow keys and press **Enter** to paste.
-- Open the board from the tray to copy an item for manual pasting. A check mark on the tile confirms that it reached the clipboard.
-- Drag tiles to arrange them, use the edge **+** buttons to add rows or columns, and press **Ctrl+F** to search the selected application by title or tag.
+1. **Save a phrase.** With ClipEverything running, type a short phrase in Notepad, select it, and press **Ctrl+Alt+C**.
+2. **Give it a name.** In the registration window, enter a name such as “Review reply” and click **Save**. You can also add tags or choose **Capture area** to save a visual preview. The preview helps identify the clip, and pasting uses the original saved content.
+3. **Paste it.** Put the caret on a new line in Notepad and press **Ctrl+Alt+V**. Click **Review reply**, or select it with the arrow keys and press **Enter**. ClipEverything pastes into the original input field. If you saved the clip in another program, choose that program in the sidebar.
 
-The default profile uses `%APPDATA%\ClipEverythingRust` for compatibility with earlier releases. A portable copy uses `portable-data-rust` next to its executable. Format support depends on the receiving application.
+![ClipEverything 0.6.12 clip editor with a name, a captured preview, tags, and the Save button](docs/screenshots/v0.6.12-editor-en.png)
+
+## Once your board fills up
+
+- **Find a clip.** Choose the source program and press **Ctrl+F** to search its titles or tags. Hover over a tile to see its preview.
+- **Keep your favorites within reach.** Drag tiles into an order you remember. Use the **+** at the right edge to add a column or the **+** at the bottom to add a row.
+- **Copy for manual pasting.** Open the board from the ClipEverything tray menu, click a tile and wait for the check mark, then press **Ctrl+V** in your destination.
+- **Change the shortcuts.** Open **Settings** at the bottom of the sidebar. The steps above use the defaults.
+
+Clips are stored locally. The default profile is `%APPDATA%\ClipEverythingRust`, and portable copies use `portable-data-rust` beside the executable. Rich formatting depends on what the receiving program supports.
 
 ## Build
 
@@ -40,4 +50,4 @@ dotnet tool install --tool-path target/pack-tools wix --version 4.0.6
 .\package.ps1 -Installer
 ```
 
-The packages are written to `rust/dist/`. See the [project guide](rust/README.md) for installation options, legacy data import, and source layout.
+Build outputs go to `rust/dist/`. For installation options, legacy data import, and source layout, see the [project guide](rust/README.md).

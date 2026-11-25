@@ -2,26 +2,38 @@
 
 [English](README.md) · 한국어
 
-ClipEverything은 자주 붙여넣는 문구, 서식, 표, 이미지, 파일 선택을 저장해 다시 사용하는 Windows x64 네이티브 앱입니다. 프로그램별 버튼판에 항목을 배치하고, 이름이나 영역 스크린샷으로 구분할 수 있습니다. 원본 클립보드 형식은 로컬 SQLite 보관함에 저장하며, 붙여넣기 결과는 대상 프로그램이 지원하는 형식에 따라 달라집니다.
+**매일매일 반복되는 지긋지긋한 업무.** 어제 보낸 회의 안내, 매주 만드는 실적표, “검토 결과를 공유드립니다.” 오늘도 그 문장을 찾으려고 지난 문서를 열었다면, 이제 버튼 하나에 넣어 두세요.
 
-## 설치 및 실행
+ClipEverything은 자주 쓰는 문구와 서식, 표, 이미지, 파일 선택을 프로그램별 버튼판에 보관하는 Windows x64 앱입니다. 한 번 저장해 두고 다음부터는 단축키로 꺼내 쓰면 됩니다.
 
-[Windows용 최신 버전 다운로드](https://github.com/HosooJeong/ClipEverything/releases/latest)
+![ClipEverything 0.6.12 실제 화면. 왼쪽에는 프로그램 목록, 오른쪽에는 주간 실적표와 예산 집행표를 담은 Excel 버튼판](docs/screenshots/v0.6.12-board-ko.png)
 
-| 파일 | 사용 방법 |
+## 일단 받아서 열어 봅시다
+
+**처음이라면 MSI가 가장 간단합니다.** 아래에서 MSI를 받아 실행하고, 기본 설정 그대로 설치한 뒤 **마침**을 누르면 버튼판이 열립니다.
+
+| 다운로드 | 이렇게 쓰세요 |
 | --- | --- |
-| `ClipEverything.msi` | 현재 사용자용으로 설치합니다. 설치 폴더, 바로가기, 자동 시작, 트레이 동작, 기본 단축키를 선택할 수 있습니다. |
-| `ClipEverything.exe` | Windows 사용자 프로필의 보관함을 사용해 바로 실행합니다. |
-| `ClipEverything-portable.zip` | 쓰기 가능한 폴더에 전체 압축을 풀고 실행합니다. 동봉된 `portable.flag`를 통해 실행 파일 옆에 기록을 저장합니다. |
+| [ClipEverything.msi](https://github.com/HosooJeong/ClipEverything/releases/latest/download/ClipEverything.msi) | Windows x64 설치용입니다. 시작 메뉴·바탕화면 바로가기, 로그인 시 실행, 기본 단축키를 고를 수 있습니다. |
+| [ClipEverything.exe](https://github.com/HosooJeong/ClipEverything/releases/latest/download/ClipEverything.exe) | 파일을 바로 실행합니다. 보관함은 Windows 사용자 프로필에 저장합니다. |
+| [ClipEverything-portable.zip](https://github.com/HosooJeong/ClipEverything/releases/latest/download/ClipEverything-portable.zip) | 쓰기 가능한 폴더에 압축을 전부 풀고 `ClipEverything.exe`를 실행합니다. `portable.flag`를 EXE 옆에 두면 그 폴더에 보관함이 생깁니다. |
 
-## 사용 방법
+## 첫 문구를 저장하고 붙여넣기
 
-- 원본 프로그램에서 내용을 선택하고 **Ctrl+Alt+C**를 눌러 등록합니다. 이름과 태그를 입력하거나 영역을 캡처해 미리보기로 저장할 수 있습니다.
-- 붙여넣을 프로그램에서 **Ctrl+Alt+V**를 눌러 버튼판을 엽니다. 항목을 클릭하거나 방향키로 선택한 뒤 **Enter**를 누릅니다.
-- 트레이에서 버튼판을 열면 수동 복사로 동작합니다. 항목에 체크가 표시되면 원하는 창에서 **Ctrl+V**로 붙여넣습니다.
-- 버튼을 드래그해 배치하고 가장자리의 **+**로 행과 열을 추가합니다. **Ctrl+F**로 선택한 프로그램 안에서 제목과 태그를 검색합니다.
+1. **문구를 잡아 둡니다.** ClipEverything을 켠 상태에서 메모장에 ‘검토 결과를 공유드립니다.’를 써 보세요. 문장 전체를 선택하고 **Ctrl+Alt+C**를 누릅니다.
+2. **찾기 쉬운 이름을 붙입니다.** 등록창의 **이름**에 ‘검토 회신’이라고 적고 **저장**을 누릅니다. 태그를 붙이거나 **영역 캡처**로 미리보기를 만들 수도 있습니다. 미리보기는 항목을 구분할 때 쓰고, 붙여넣을 때는 저장한 원본이 들어갑니다.
+3. **다시 꺼내 씁니다.** 메모장 새 줄에 커서를 두고 **Ctrl+Alt+V**를 누릅니다. 버튼판에서 ‘검토 회신’을 클릭하거나 방향키로 선택한 뒤 **Enter**를 누르면, 커서를 두었던 자리에 붙여넣습니다. 다른 프로그램에서 저장한 클립은 왼쪽에서 해당 프로그램을 선택하면 됩니다.
 
-기본 보관함은 이전 버전과 호환되는 `%APPDATA%\ClipEverythingRust`를 사용합니다. 포터블 보관함은 실행 파일 옆의 `portable-data-rust`에 저장됩니다.
+![ClipEverything 0.6.12 실제 편집창. 이름과 태그, 영역 캡처 미리보기, 저장 버튼](docs/screenshots/v0.6.12-editor-ko.png)
+
+## 버튼이 늘어나면
+
+- **찾을 때는 검색.** 왼쪽에서 프로그램을 고르고 **Ctrl+F**를 눌러 이름이나 태그로 검색합니다. 버튼에 마우스를 올리면 미리보기가 나옵니다.
+- **자주 쓰는 건 손에 익는 자리로.** 버튼을 끌어다 놓아 배치합니다. 오른쪽 **+**는 열을, 아래쪽 **+**는 행을 추가합니다.
+- **내가 원하는 순간에 붙여넣기.** Windows 트레이의 ClipEverything 메뉴에서 버튼판을 열고 버튼을 누릅니다. 체크가 뜨면 복사된 것이니, 원하는 창에서 **Ctrl+V**를 누르세요.
+- **단축키가 겹친다면.** 사이드바 아래 **설정**에서 등록과 버튼판 열기 단축키를 바꿀 수 있습니다.
+
+보관함은 PC에 저장됩니다. 기본 경로는 `%APPDATA%\ClipEverythingRust`이며, 포터블은 실행 파일 옆의 `portable-data-rust`를 사용합니다. 표나 이미지의 붙여넣기 결과는 대상 프로그램이 지원하는 형식에 따라 달라집니다.
 
 ## 빌드
 
