@@ -1,0 +1,77 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="ClipEverything" Manufacturer="ClipEverything" Version="0.6.12" Language="1042" Codepage="949" UpgradeCode="F87E8F7A-8788-43C4-B20E-D483C3E324D0" Scope="perUser" InstallerVersion="500">
+    <SummaryInformation Codepage="949" />
+    <MajorUpgrade IgnoreLanguage="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="더 최신 버전의 ClipEverything이 설치되어 있습니다." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="ClipIcon" SourceFile="$(var.AppIcon)" />
+    <Property Id="ARPPRODUCTICON" Value="ClipIcon" />
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="ClipEverything">
+          <Component Id="App" Guid="A1A21B59-C39F-405A-A57E-BADB3F3C2A33">
+            <File Id="AppExe" Source="$(var.AppExe)" Name="ClipEverything.exe" />
+            <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="ProductCode" Type="string" Value="[ProductCode]" />
+            <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+            <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="InstallLocation" Type="string" Value="[INSTALLFOLDER]" />
+            <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="InitialSettings" Type="string" Value="[CE_RECIPE]" />
+          </Component>
+          <Component Id="Uninstaller" Guid="E60823EC-2E4D-42C8-8EC7-C410659F216C">
+            <File Id="UninstallExe" Source="$(var.UninstallExe)" Name="Uninstall.exe" />
+            <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="UninstallLauncher" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="FlatShortcut" Guid="566AC8D7-C73F-488E-8D96-C03CE0FF2E6E" Condition="NOT CE_MENU_GROUP">
+        <Shortcut Id="RootAppLink" Name="ClipEverything" Target="[#AppExe]" WorkingDirectory="INSTALLFOLDER" Icon="ClipIcon" />
+        <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="FlatShortcut" Type="string" Value="1" KeyPath="yes" />
+      </Component>
+      <Directory Id="StartMenuGroup" Name="ClipEverything">
+        <Component Id="GroupedShortcuts" Guid="7E08431A-DFF6-4127-9E9A-37085E5D3BB8" Condition="CE_MENU_GROUP = &quot;1&quot;">
+          <Shortcut Id="GroupedAppLink" Name="ClipEverything" Target="[#AppExe]" WorkingDirectory="INSTALLFOLDER" Icon="ClipIcon" />
+          <Shortcut Id="GroupedUninstallLink" Name="ClipEverything 제거" Target="[#UninstallExe]" WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveStartMenuGroup" On="uninstall" />
+          <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="GroupedShortcuts" Type="string" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="9ED5FC6E-4795-407B-8A85-F016B8203565" Condition="CE_DESKTOP = &quot;1&quot;">
+        <Shortcut Id="DesktopAppLink" Name="ClipEverything" Target="[#AppExe]" WorkingDirectory="INSTALLFOLDER" Icon="ClipIcon" />
+        <RegistryValue Root="HKCU" Key="Software\ClipEverythingRust" Name="DesktopShortcut" Type="string" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <CustomAction Id="LaunchInstalledApp" FileRef="AppExe" ExeCommand="" Return="asyncNoWait" Impersonate="yes" />
+    <CustomAction Id="ClearStartup" FileRef="AppExe" ExeCommand="--unregister-startup" Execute="deferred" Impersonate="yes" Return="ignore" />
+    <Property Id="INSTALLFOLDER" Secure="yes" />
+    <Property Id="CE_COPY" Secure="yes" />
+    <Property Id="CE_PASTE" Secure="yes" />
+    <Property Id="CE_TRAY" Secure="yes" />
+    <Property Id="CE_STARTUP" Secure="yes" />
+    <Property Id="CE_EDIT" Secure="yes" />
+    <Property Id="CE_MENU_GROUP" Secure="yes" />
+    <Property Id="CE_DESKTOP" Secure="yes" />
+    <Property Id="SetupDirectoryId" Value="INSTALLFOLDER" />
+    <Property Id="CE_INITIALIZED" Secure="yes" />
+    <Property Id="CE_RECIPE" Secure="yes" />
+    <Binary Id="SetupActions" SourceFile="$(var.SetupDll)" />
+    <CustomAction Id="InitializeSetup" BinaryRef="SetupActions" DllEntry="InitializeSetup" />
+    <CustomAction Id="LoadMaintenance" BinaryRef="SetupActions" DllEntry="LoadMaintenance" />
+    <CustomAction Id="CheckKeys" BinaryRef="SetupActions" DllEntry="CheckKeys" />
+    <CustomAction Id="CheckOptions" BinaryRef="SetupActions" DllEntry="CheckOptions" />
+    <CustomAction Id="PrepareSetup" BinaryRef="SetupActions" DllEntry="PrepareSetup" />
+    <CustomAction Id="RollbackStartup" BinaryRef="SetupActions" DllEntry="RollbackStartup" Execute="rollback" Impersonate="yes" />
+    <CustomAction Id="ApplyStartup" BinaryRef="SetupActions" DllEntry="ApplyStartup" Execute="deferred" Impersonate="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="InitializeSetup" Before="CostInitialize" Condition="NOT Installed AND NOT CE_INITIALIZED" />
+      <Custom Action="LoadMaintenance" Before="CostInitialize" Condition="Installed" />
+      <Custom Action="PrepareSetup" After="CostFinalize" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="RollbackStartup" Before="ApplyStartup" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="ApplyStartup" After="WriteRegistryValues" Condition="NOT Installed AND NOT REMOVE" />
+      <Custom Action="ClearStartup" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+    <UIRef Id="SetupUI" />
+    <Feature Id="Main"><ComponentRef Id="App"/><ComponentRef Id="Uninstaller"/><ComponentRef Id="GroupedShortcuts"/><ComponentRef Id="FlatShortcut"/><ComponentRef Id="DesktopShortcut"/></Feature>
+  </Package>
+</Wix>

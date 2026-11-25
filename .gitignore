@@ -8,6 +8,17 @@
 *.ilk
 *.exe
 *.zip
+*.msi
+
+# Local clipboard libraries and per-user state
+portable-data/
+portable-data-rust/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
 
 # Logs and generated build notes
 *.log

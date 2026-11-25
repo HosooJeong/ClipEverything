@@ -1,0 +1,103 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <UI Id="SetupUI">
+      <TextStyle Id="BodyFont" FaceName="맑은 고딕" Size="9" />
+      <TextStyle Id="HeadingFont" FaceName="맑은 고딕" Size="14" Bold="yes" />
+      <TextStyle Id="LabelFont" FaceName="맑은 고딕" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="BodyFont" />
+      <Dialog Id="SetupOptions" Width="360" Height="343" Title="ClipEverything 설치">
+        <Control Id="Title" Type="Text" X="15" Y="11" Width="330" Height="22" Text="{\HeadingFont}설치 및 기본 설정" />
+        <Control Id="FolderLabel" Type="Text" X="15" Y="41" Width="330" Height="12" Text="{\LabelFont}설치 폴더" />
+        <Control Id="Path" Type="PathEdit" X="15" Y="56" Width="275" Height="16" Property="SetupDirectoryId" Indirect="yes" />
+        <Control Id="Browse" Type="PushButton" X="294" Y="55" Width="51" Height="18" Text="찾아보기">
+          <Publish Event="SpawnDialog" Value="SelectFolder" />
+        </Control>
+        <Control Id="Keys" Type="Text" X="15" Y="87" Width="180" Height="13" Text="{\LabelFont}전역 단축키" />
+        <Control Id="KeyHint" Type="Text" X="15" Y="101" Width="330" Height="13" Text="보조 키(Ctrl, Alt, Shift, Win)와 영문자 또는 숫자를 조합합니다." />
+        <Control Id="CopyLabel" Type="Text" X="15" Y="120" Width="90" Height="14" Text="선택 영역 등록" />
+        <Control Id="Copy" Type="Edit" X="108" Y="117" Width="163" Height="17" Property="CE_COPY" />
+        <Control Id="PasteLabel" Type="Text" X="15" Y="143" Width="90" Height="14" Text="버튼판 열기" />
+        <Control Id="Paste" Type="Edit" X="108" Y="140" Width="163" Height="17" Property="CE_PASTE" />
+        <Control Id="Check" Type="PushButton" X="277" Y="140" Width="68" Height="17" Text="충돌 검사">
+          <Publish Event="DoAction" Value="CheckKeys" Order="1" />
+          <Publish Event="SpawnDialog" Value="CheckResult" Order="2" />
+        </Control>
+        <Control Id="Behavior" Type="Text" X="15" Y="173" Width="330" Height="13" Text="{\LabelFont}실행 방식" />
+        <Control Id="Startup" Type="CheckBox" X="15" Y="191" Width="330" Height="16" Text="Windows 로그인 시 트레이에서 자동 시작" Property="CE_STARTUP" CheckBoxValue="1" />
+        <Control Id="Tray" Type="CheckBox" X="15" Y="212" Width="330" Height="16" Text="창을 닫으면 트레이에 유지" Property="CE_TRAY" CheckBoxValue="1" />
+        <Control Id="EditAfter" Type="CheckBox" X="15" Y="233" Width="330" Height="16" Text="클립 등록 직후 설명·스크린샷 편집창 열기" Property="CE_EDIT" CheckBoxValue="1" />
+        <Control Id="MenuFolder" Type="CheckBox" X="15" Y="254" Width="330" Height="16" Text="시작 메뉴에 ClipEverything 폴더 만들기" Property="CE_MENU_GROUP" CheckBoxValue="1" />
+        <Control Id="DesktopLink" Type="CheckBox" X="15" Y="275" Width="330" Height="16" Text="바탕화면에 바로가기 만들기" Property="CE_DESKTOP" CheckBoxValue="1" />
+        <Control Id="Divider" Type="Line" X="0" Y="306" Width="360" Height="0" />
+        <Control Id="Cancel" Type="PushButton" X="219" Y="317" Width="58" Height="18" Text="취소" Cancel="yes"><Publish Event="EndDialog" Value="Exit" /></Control>
+        <Control Id="Install" Type="PushButton" X="283" Y="317" Width="62" Height="18" Text="설치" Default="yes">
+          <Publish Event="DoAction" Value="CheckOptions" Order="1" />
+          <Publish Event="SpawnDialog" Value="CheckResult" Condition="NOT CE_VALID" Order="2" />
+          <Publish Property="LaunchOnFinish" Value="1" Condition="CE_VALID AND NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE AND NOT REINSTALL" Order="3" />
+          <Publish Event="EndDialog" Value="Return" Condition="CE_VALID" Order="4" />
+        </Control>
+      </Dialog>
+      <Dialog Id="SelectFolder" Width="310" Height="220" Title="설치 폴더 선택">
+        <Control Id="Drive" Type="DirectoryCombo" X="12" Y="12" Width="198" Height="75" Property="SetupDirectoryId" Indirect="yes" Fixed="yes" Remote="yes">
+          <Subscribe Event="IgnoreChange" Attribute="IgnoreChange" />
+        </Control>
+        <Control Id="Up" Type="PushButton" X="214" Y="12" Width="42" Height="17" Text="위로"><Publish Event="DirectoryListUp" Value="0" /></Control>
+        <Control Id="New" Type="PushButton" X="259" Y="12" Width="39" Height="17" Text="새 폴더"><Publish Event="DirectoryListNew" Value="0" /></Control>
+        <Control Id="Folders" Type="DirectoryList" X="12" Y="34" Width="286" Height="114" Property="SetupDirectoryId" Indirect="yes" Sunken="yes" />
+        <Control Id="PathLabel" Type="Text" X="12" Y="152" Width="270" Height="12" Text="선택한 경로" />
+        <Control Id="Path" Type="PathEdit" X="12" Y="166" Width="286" Height="17" Property="SetupDirectoryId" Indirect="yes" />
+        <Control Id="Confirm" Type="PushButton" X="239" Y="193" Width="59" Height="18" Text="선택" Default="yes">
+          <Publish Event="SetTargetPath" Value="INSTALLFOLDER" Order="1"/><Publish Event="EndDialog" Value="Return" Order="2"/>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="175" Y="193" Width="59" Height="18" Text="취소" Cancel="yes">
+          <Publish Event="Reset" Value="0" Order="1"/><Publish Event="EndDialog" Value="Return" Order="2"/>
+        </Control>
+      </Dialog>
+      <Dialog Id="CheckResult" Width="294" Height="96" Title="설치 설정 확인">
+        <Control Id="Status" Type="Text" X="14" Y="13" Width="267" Height="49" Text="[CE_STATUS]" />
+        <Control Id="OK" Type="PushButton" X="222" Y="67" Width="57" Height="18" Text="확인" Default="yes" Cancel="yes"><Publish Event="EndDialog" Value="Return" /></Control>
+      </Dialog>
+      <Dialog Id="Maintain" Width="270" Height="108" Title="ClipEverything 유지 관리">
+        <Control Id="Text" Type="Text" X="14" Y="13" Width="245" Height="43" Text="설치 파일을 복구하거나 프로그램을 제거할 수 있습니다. 개인 보관함과 버튼 배치는 유지됩니다." />
+        <Control Id="Repair" Type="PushButton" X="66" Y="72" Width="57" Height="18" Text="복구">
+          <Publish Event="ReinstallMode" Value="omus" Order="1" />
+          <Publish Event="Reinstall" Value="ALL" Order="2" />
+          <Publish Event="EndDialog" Value="Return" Order="3" />
+        </Control>
+        <Control Id="Remove" Type="PushButton" X="130" Y="72" Width="57" Height="18" Text="제거">
+          <Publish Event="Remove" Value="ALL" Order="1" /><Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="195" Y="72" Width="57" Height="18" Text="취소" Cancel="yes" Default="yes"><Publish Event="EndDialog" Value="Exit" /></Control>
+      </Dialog>
+      <Dialog Id="SetupDone" Width="260" Height="95" Title="ClipEverything">
+        <Control Id="Text" Type="Text" X="16" Y="17" Width="230" Height="33" Text="작업을 완료했습니다." HideCondition="LaunchOnFinish" />
+        <Control Id="FirstInstallText" Type="Text" X="16" Y="17" Width="230" Height="33" Text="설치를 완료했습니다. 마침을 누르면 버튼판이 열립니다." Hidden="yes" ShowCondition="LaunchOnFinish" />
+        <Control Id="OK" Type="PushButton" X="184" Y="63" Width="60" Height="18" Text="마침" Default="yes" Cancel="yes">
+          <Publish Event="DoAction" Value="LaunchInstalledApp" Condition="LaunchOnFinish = &quot;1&quot; AND UILevel = 5 AND NOT REMOVE AND NOT REINSTALL AND NOT WIX_UPGRADE_DETECTED" Order="1" />
+          <Publish Event="EndDialog" Value="Return" Order="2" />
+        </Control>
+      </Dialog>
+      <Dialog Id="SetupProgress" Modeless="yes" Width="295" Height="104" Title="ClipEverything">
+        <Control Id="Status" Type="Text" X="13" Y="13" Width="270" Height="17" Text="설치 상태를 확인하고 있습니다.">
+          <Subscribe Event="ActionText" Attribute="Text" />
+        </Control>
+        <Control Id="Bar" Type="ProgressBar" X="13" Y="37" Width="269" Height="13" ProgressBlocks="yes">
+          <Subscribe Event="SetProgress" Attribute="Progress" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="225" Y="72" Width="57" Height="18" Text="취소" Cancel="yes"><Publish Event="SpawnDialog" Value="CancelSetup" /></Control>
+      </Dialog>
+      <Dialog Id="CancelSetup" Width="220" Height="82" Title="설치 취소">
+        <Control Id="Question" Type="Text" X="13" Y="12" Width="196" Height="20" Text="진행 중인 작업을 취소하시겠습니까?" />
+        <Control Id="Keep" Type="PushButton" X="72" Y="50" Width="67" Height="18" Text="계속 진행" Default="yes" Cancel="yes"><Publish Event="EndDialog" Value="Return" /></Control>
+        <Control Id="Stop" Type="PushButton" X="145" Y="50" Width="60" Height="18" Text="작업 취소"><Publish Event="EndDialog" Value="Exit" /></Control>
+      </Dialog>
+      <InstallUISequence>
+        <Custom Action="InitializeSetup" Before="CostInitialize" Condition="NOT Installed" />
+        <Show Dialog="SetupOptions" After="CostFinalize" Condition="NOT Installed AND NOT REMOVE" />
+        <Show Dialog="Maintain" Before="SetupProgress" Condition="Installed AND NOT REMOVE AND NOT REINSTALL" />
+        <Show Dialog="SetupProgress" Before="ExecuteAction"/>
+        <Show Dialog="SetupDone" OnExit="success" />
+      </InstallUISequence>
+    </UI>
+  </Fragment>
+</Wix>
