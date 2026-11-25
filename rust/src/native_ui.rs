@@ -1,8 +1,9 @@
 mod dialogs;
 mod grid;
-use grid::{LEVELS, Pages, Shape, WindowFit};
+use grid::{LEVELS, Pages, Shape};
 pub use grid::{MIN_HEIGHT, MIN_WIDTH};
 mod paint;
+mod popup_menu;
 mod preview;
 mod slide_surface;
 mod windows;
@@ -11,13 +12,15 @@ use self::windows::*;
 use crate::{Command, Event};
 use anyhow::{Result, ensure};
 use clip_everything::{
-    board::{Axis, Board, Cell},
+    board::{Board, Cell, Viewport},
     clipboard::wide,
-    store::Item,
+    preferences::TileContent,
+    store::{self, Item},
 };
 pub use dialogs::{Dialogs, translate};
 use dialogs::{confirm, text};
-use paint::{Bitmap, Face, Font, Symbol};
+use paint::{Bitmap, Face, Font, PreviewKey, Symbol};
+pub(crate) use popup_menu::{MenuAnchor, PopupMenu};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -37,7 +40,7 @@ use windows_sys::Win32::{
 };
 
 pub enum Input {
-    Geometry(String, f64, f64, f64, f64, i32),
+    Geometry(String, [f64; 4], Viewport),
     Control(i32),
     Search,
     Key(u16),
@@ -47,7 +50,8 @@ pub enum Input {
     CategoryKey(i32, u16),
     Pick(Binding),
     TileFocused(isize),
-    Context(Binding, i32, i32),
+    Context(Option<Binding>, i32, i32),
+    ContextAction(ContextAction),
     Hover(isize, Option<i64>),
     Dialog(isize, i32),
     Drop {
@@ -56,6 +60,11 @@ pub enum Input {
         id: i64,
         to: Cell,
     },
+}
+pub enum ContextAction {
+    Rename(i64),
+    Delete(i64),
+    Arrange(String),
 }
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
@@ -108,15 +117,19 @@ pub struct NativeUi {
     selected: usize,
     page: i32,
     pages: Pages,
-    fit: WindowFit,
+    initial_fit: bool,
     slide: Option<grid::SidebarSlide>,
     slide_surface: slide_surface::SlideSurface,
     visible: Vec<usize>,
     columns: i32,
     options: Options,
+    tile_content: TileContent,
+    visible_previews: HashMap<PreviewKey, HWND>,
+    previews_queued: bool,
     ko: bool,
     preview_window: preview::Preview,
-    last_geometry: Option<(String, i32, i32, i32, i32, i32)>,
+    context_menu: Option<PopupMenu>,
+    last_geometry: Option<(String, [i32; 4], Viewport)>,
     wheel_delta: i32,
 }
 impl NativeUi {
@@ -171,15 +184,19 @@ impl NativeUi {
                 query: String::new(),
                 selected: 0,
                 page: 0,
-                pages: Pages::default(),
-                fit: WindowFit::default(),
+                pages: Pages::new((4, 3), (4, 3)),
+                initial_fit: true,
                 slide: None,
                 slide_surface: Default::default(),
                 visible: Vec::new(),
                 columns: 4,
                 options,
+                tile_content: TileContent::default(),
+                visible_previews: HashMap::new(),
+                previews_queued: false,
                 ko,
                 preview_window,
+                context_menu: None,
                 last_geometry: None,
                 wheel_delta: 0,
             };
@@ -195,13 +212,12 @@ impl NativeUi {
             for id in [
                 SEARCH,
                 SETTINGS,
+                HELP,
                 SMALLER,
                 LARGER,
                 TOGGLE_SIDEBAR,
                 EMPTY_MESSAGE,
                 CATEGORY_SCROLL,
-                ADD_COL,
-                ADD_ROW,
                 PREVIOUS,
                 NEXT,
             ] {
@@ -228,10 +244,50 @@ impl NativeUi {
             SetWindowTextW(self.bar[&SEARCH], wide(&self.query).as_ptr());
         }
     }
+    pub fn set_tile_content(&mut self, mode: TileContent) {
+        self.tile_content = mode;
+    }
+    fn queue_tile_previews(&mut self) {
+        if !self.previews_queued
+            && self
+                .visible_previews
+                .keys()
+                .any(|key| !self.bridge.previews.borrow().contains_key(key))
+        {
+            self.previews_queued = self.bridge.proxy.send_event(Event::TilePreviews).is_ok();
+        }
+    }
+    pub fn load_tile_previews(&mut self, db: &Connection) {
+        self.previews_queued = false;
+        // Work in small batches, and only for the currently visible page.
+        let missing = {
+            let cached = self.bridge.previews.borrow();
+            self.visible_previews
+                .iter()
+                .filter(|(key, _)| !cached.contains_key(key))
+                .take(8)
+                .map(|(&key, &tile)| (key, tile))
+                .collect::<Vec<_>>()
+        };
+        for (key, tile) in missing {
+            let image = store::preview_image(db, key.0)
+                .ok()
+                .flatten()
+                .and_then(|bytes| Bitmap::decode(&bytes, 192, 128));
+            self.bridge.previews.borrow_mut().insert(key, image);
+            unsafe {
+                InvalidateRect(tile, null(), 0);
+            }
+        }
+        self.queue_tile_previews();
+    }
     pub fn copy_succeeded(&self, id: i64) {
         self.bridge.copy_succeeded(self.hwnd, id);
     }
     pub fn hide(&self) {
+        if let Some(menu) = &self.context_menu {
+            menu.hide();
+        }
         self.slide_surface.hide();
         self.bridge.cancel();
         self.bridge.hide_tip();
@@ -387,20 +443,23 @@ impl NativeUi {
     }
     fn filter(&mut self) {
         let old = self.records.get(self.selected).and_then(|r| r.item);
+        let (cols, rows) = self.dimensions();
+        self.columns = cols;
         let mut records = if self.query.trim().is_empty()
             && let Some(b) = self.board()
         {
-            let mut cells = (0..b.rows * b.cols)
+            let cols = i64::from(cols);
+            let mut cells = (0..i64::from(rows) * cols)
                 .map(|i| Record {
                     item: None,
                     cell: Some(Cell {
-                        row: i / b.cols,
-                        col: i % b.cols,
+                        row: i / cols,
+                        col: i % cols,
                     }),
                 })
                 .collect::<Vec<_>>();
             for slot in &b.slots {
-                if let Some(cell) = cells.get_mut((slot.cell.row * b.cols + slot.cell.col) as usize)
+                if let Some(cell) = cells.get_mut((slot.cell.row * cols + slot.cell.col) as usize)
                     && self.ids.contains_key(&slot.id)
                 {
                     cell.item = Some(slot.id);
@@ -451,10 +510,19 @@ impl NativeUi {
             .copied()
     }
     fn dimensions(&self) -> (i32, i32) {
-        if let Some(b) = self.board() {
-            return (b.cols as i32, b.rows as i32);
+        let (cols, rows) = (self.pages.cols, self.pages.rows);
+        if self.query.trim().is_empty()
+            && let Some(b) = self.board()
+        {
+            let (occupied_cols, occupied_rows) = b.occupied_size();
+            let full_pages =
+                |occupied: i64, span: i32| ((occupied.max(1) as i32 + span - 1) / span) * span;
+            return (
+                full_pages(occupied_cols, cols),
+                full_pages(occupied_rows, rows),
+            );
         }
-        (1, self.records.len().max(1) as i32)
+        (cols, rows)
     }
     pub fn moved(&mut self) -> Result<()> {
         self.last_geometry = None;
@@ -487,16 +555,10 @@ impl NativeUi {
                 }
                 self.font = f;
             }
-            let (cols, rows) = self.dimensions();
-            let mut shape = Shape::new(
-                cols,
-                rows,
-                self.options.level,
-                dpi,
-                self.options.sidebar_collapsed,
-            );
-            if self.board().is_some() {
-                self.fit.fit(self.hwnd, shape, &self.active);
+            let mut shape = Shape::new(self.options.level, dpi, self.options.sidebar_collapsed);
+            if self.initial_fit {
+                self.initial_fit = false;
+                shape.fit_initial_window(self.hwnd);
             }
             let rail = self.slide.as_ref().map_or(
                 px(grid::sidebar_width(self.options.sidebar_collapsed)),
@@ -510,13 +572,26 @@ impl NativeUi {
             if w < px(40) || h < px(60) {
                 return Ok(());
             }
-            self.columns = cols;
+            self.bridge.grid_shape.set(Some(shape));
+            let capacity = shape.capacity(w, h);
+            let resized = capacity != (self.pages.cols, self.pages.rows);
+            let old_origin = self.pages.origin(self.page);
+            if resized {
+                self.pages = Pages::new(capacity, capacity);
+                self.filter();
+            }
+            let (cols, rows) = self.dimensions();
             let display_rows = if self.query.trim().is_empty() {
                 rows
             } else {
                 ((self.records.len() as i32 + cols - 1) / cols).max(1)
             };
-            self.pages = Pages::new(shape, w, h, display_rows);
+            self.pages = Pages::new(capacity, (cols, display_rows));
+            if resized {
+                let col = old_origin.0.min(cols - 1);
+                let row = old_origin.1.min(display_rows - 1);
+                self.page = self.pages.containing(col, row);
+            }
             self.page = self.page.clamp(0, self.pages.count - 1);
             let paged = self.pages.count > 1;
             let margin = px(8);
@@ -533,9 +608,10 @@ impl NativeUi {
             let category_height = px(40);
             let row_pitch = category_height + px(8);
             let list_y = rail_pad + rail_button + px(12);
-            let footer = h - rail_pad - rail_button;
+            let help_y = h - rail_pad - rail_button;
+            let settings_y = help_y - rail_button - px(4);
             self.category_capacity =
-                ((footer - px(10) - list_y + px(8)) / row_pitch).max(1) as usize;
+                ((settings_y - px(10) - list_y + px(8)) / row_pitch).max(1) as usize;
             let programs = self.categories.len();
             let scroll = programs > self.category_capacity;
             self.category_top = self
@@ -651,29 +727,33 @@ impl NativeUi {
             } else {
                 ShowWindow(scrollbar, SW_HIDE);
             }
-            let settings_label = self.tr("설정", "Settings");
-            self.face(
-                self.bar[&SETTINGS],
-                Face {
-                    symbol: Some(Symbol::Settings),
-                    centered: collapsed,
-                    label_alpha: Some((255. * label_fade).round() as u8),
-                    text: if collapsed {
-                        String::new()
-                    } else {
-                        settings_label.into()
+            for (id, label, symbol, y) in [
+                (
+                    SETTINGS,
+                    self.tr("설정", "Settings"),
+                    Symbol::Settings,
+                    settings_y,
+                ),
+                (HELP, self.tr("도움말", "Help"), Symbol::Help, help_y),
+            ] {
+                let button = self.bar[&id];
+                self.face(
+                    button,
+                    Face {
+                        symbol: Some(symbol),
+                        centered: collapsed,
+                        label_alpha: Some((255. * label_fade).round() as u8),
+                        text: if collapsed {
+                            String::new()
+                        } else {
+                            label.into()
+                        },
+                        ..Default::default()
                     },
-                    ..Default::default()
-                },
-                settings_label,
-            );
-            placements.position(
-                self.bar[&SETTINGS],
-                rail_pad,
-                footer,
-                list_width,
-                rail_button,
-            );
+                    label,
+                );
+                placements.position(button, rail_pad, y, list_width, rail_button);
+            }
             let mut right = w - margin;
             if paged {
                 for (id, label, symbol, enabled) in [
@@ -768,7 +848,6 @@ impl NativeUi {
             let button_h = shape.height;
             let pitch = button_h + gap;
             let width = shape.width;
-            let area = w - shape.left - shape.edge;
             let (first_col, first_row) = self.pages.origin(self.page);
             self.visible.clear();
             let render_empty = self.board().is_some() && self.query.trim().is_empty();
@@ -787,6 +866,17 @@ impl NativeUi {
                     }
                 }
             }
+            let previous_focus = GetFocus();
+            let had_tile_focus = self.tiles.contains(&previous_focus);
+            if !self.visible.contains(&self.selected) {
+                self.selected = self
+                    .visible
+                    .iter()
+                    .copied()
+                    .find(|&n| self.records.get(n).is_some_and(|r| r.item.is_some()))
+                    .or_else(|| self.visible.first().copied())
+                    .unwrap_or(0);
+            }
             let num = self.visible.len();
             while self.tiles.len() < num {
                 self.tiles.push(child(
@@ -799,6 +889,7 @@ impl NativeUi {
                 )?);
             }
             self.bridge.bindings.borrow_mut().clear();
+            self.visible_previews.clear();
             for (n, &ctrl) in self.tiles.iter().enumerate() {
                 if n >= num {
                     ShowWindow(ctrl, SW_HIDE);
@@ -819,29 +910,37 @@ impl NativeUi {
                     } else {
                         String::new()
                     },
-                    icon: i.and_then(|i| i.program_icon),
+                    icon: i
+                        .filter(|_| self.tile_content == TileContent::Icon)
+                        .and_then(|i| i.program_icon),
+                    preview: i
+                        .filter(|i| {
+                            self.tile_content == TileContent::Preview
+                                && (i.shot != 0 || i.has_thumbnail)
+                        })
+                        .map(|i| (i.id, i.shot)),
                     active: index == self.selected,
                     stacked: true,
                     blank: i.is_none(),
                     fallback: i
-                        .filter(|i| i.program_icon.is_none())
+                        .filter(|i| {
+                            self.tile_content == TileContent::Icon && i.program_icon.is_none()
+                        })
                         .map(|i| initial(&i.program_name))
                         .unwrap_or_default(),
                     ..Default::default()
                 };
+                let preview = face.preview;
                 self.face(ctrl, face, &self.bridge.item_label(r.item, label));
+                if let Some(key) = preview {
+                    self.visible_previews.insert(key, ctrl);
+                }
                 self.bridge.bindings.borrow_mut().insert(
                     ctrl as usize,
                     Binding {
                         record: r,
                         index,
-                        app: r.cell.and_then(|_| {
-                            if self.query.is_empty() {
-                                Some(self.active.clone())
-                            } else {
-                                None
-                            }
-                        }),
+                        app: r.cell.map(|_| self.active.clone()),
                         rev: self.board().map_or(0, |b| b.revision),
                     },
                 );
@@ -853,52 +952,29 @@ impl NativeUi {
                     button_h,
                 );
             }
-            let hit = px(32);
-            let inset = (shape.edge - hit) / 2;
-            let grid_height = h - y - shape.edge;
-            for (id, label) in [
-                (ADD_COL, self.tr("열 추가", "Add column")),
-                (ADD_ROW, self.tr("행 추가", "Add row")),
-            ] {
-                let ctrl = self.bar[&id];
-                self.face(
-                    ctrl,
-                    Face {
-                        symbol: Some(Symbol::Add),
-                        ..Default::default()
-                    },
-                    label,
-                );
-                if id == ADD_COL {
-                    placements.position(
-                        ctrl,
-                        w - shape.edge + inset,
-                        y + (grid_height - hit) / 2,
-                        hit,
-                        hit,
-                    );
-                } else {
-                    placements.position(
-                        ctrl,
-                        shape.left + (area - hit) / 2,
-                        h - shape.edge + inset,
-                        hit,
-                        hit,
-                    );
-                }
-                EnableWindow(ctrl, self.board().is_some() as i32);
-            }
+            self.bridge
+                .previews
+                .borrow_mut()
+                .retain(|key, _| self.visible_previews.contains_key(key));
+            self.queue_tile_previews();
             placements.apply(self.hwnd);
+            if had_tile_focus && (resized || !self.tiles[..num].contains(&previous_focus)) {
+                self.focus();
+            }
             let geo = (
                 self.active.clone(),
-                shape.left + width / 2 - first_col * (width + gap),
-                y + button_h / 2 - first_row * pitch,
-                width + gap,
-                pitch,
-                self.columns,
+                [shape.left + width / 2, y + button_h / 2, width + gap, pitch],
+                Viewport {
+                    origin: Cell {
+                        row: i64::from(first_row),
+                        col: i64::from(first_col),
+                    },
+                    rows: i64::from(self.pages.rows),
+                    cols: i64::from(self.pages.cols),
+                },
             );
             if self.board().is_some()
-                && self.query.is_empty()
+                && self.query.trim().is_empty()
                 && !self.is_sliding()
                 && self.last_geometry.as_ref() != Some(&geo)
             {
@@ -906,11 +982,8 @@ impl NativeUi {
                 let scale = dpi as f64 / 96.;
                 self.bridge.event(Input::Geometry(
                     geo.0,
-                    geo.1 as f64 / scale,
-                    geo.2 as f64 / scale,
-                    geo.3 as f64 / scale,
-                    geo.4 as f64 / scale,
-                    geo.5,
+                    geo.1.map(|n| f64::from(n) / scale),
+                    geo.2,
                 ));
             }
             if sidebar_frame {
@@ -933,13 +1006,7 @@ impl NativeUi {
         }
     }
     fn choose(&mut self, n: usize) -> Result<()> {
-        let (cols, rows) = self.dimensions();
-        let count = if self.query.is_empty() {
-            (cols * rows) as usize
-        } else {
-            self.records.len()
-        };
-        self.selected = n.min(count.saturating_sub(1));
+        self.selected = n.min(self.records.len().saturating_sub(1));
         self.page = self.pages.containing(
             self.selected as i32 % self.columns,
             self.selected as i32 / self.columns,
@@ -963,20 +1030,18 @@ impl NativeUi {
         }
         match event {
             Input::Dialog(..) => {}
-            Input::Geometry(app, x, y, dx, dy, c) => {
+            Input::Geometry(app, geometry, viewport) => {
                 return Ok(Some(Command::GridGeometry {
                     app,
-                    x,
-                    y,
-                    dx,
-                    dy,
-                    columns: c.into(),
+                    geometry,
+                    viewport,
                 }));
             }
             Input::Control(SEARCH) => {}
             Input::Control(PREVIOUS) => self.turn_page(-1)?,
             Input::Control(NEXT) => self.turn_page(1)?,
             Input::Control(SETTINGS) => return Ok(Some(Command::ShowSettings)),
+            Input::Control(HELP) => return Ok(Some(Command::ShowHelp)),
             Input::Control(id) if id == SMALLER || id == LARGER => {
                 let level =
                     (self.options.level + if id == LARGER { 1 } else { -1 }).clamp(1, LEVELS);
@@ -1013,22 +1078,6 @@ impl NativeUi {
                     _ => top,
                 };
                 self.scroll_categories(next)?;
-            }
-            Input::Control(id) if id == ADD_COL || id == ADD_ROW => {
-                if let Some(b) = self.board() {
-                    return Ok(Some(Command::ResizeBoard {
-                        app: b.app.clone(),
-                        rev: b.revision,
-                        axis: if id == ADD_ROW {
-                            Axis::Row
-                        } else {
-                            Axis::Column
-                        },
-                        index: if id == ADD_ROW { b.rows } else { b.cols },
-                        add: true,
-                        confirmed: false,
-                    }));
-                }
             }
             Input::Control(_) => {}
             Input::Search => {
@@ -1067,7 +1116,8 @@ impl NativeUi {
             Input::Drop { app, rev, id, to } => {
                 return Ok(Some(Command::MoveSlot { app, rev, id, to }));
             }
-            Input::Context(r, x, y) => return self.context(r, x, y),
+            Input::Context(r, x, y) => self.context(r, x, y)?,
+            Input::ContextAction(action) => return Ok(self.context_command(action)),
             Input::Hover(h, id) => self.preview(h as HWND, id, db)?,
             Input::Wheel(d) => {
                 let mut p = POINT::default();
@@ -1223,114 +1273,64 @@ impl NativeUi {
         }
         Ok(done)
     }
-    fn context(&mut self, r: Binding, x: i32, y: i32) -> Result<Option<Command>> {
-        let mut list = Vec::new();
-        if let Some(i) = r.record.item.and_then(|id| self.item(id)) {
-            list.push((1, self.tr("수정 · 태그", "Edit · tags").into()));
-            list.push((
-                2,
-                if i.favorite {
-                    self.tr("즐겨찾기 해제", "Unfavorite")
-                } else {
-                    self.tr("즐겨찾기 추가", "Favorite")
-                }
-                .into(),
-            ));
-            list.push((3, self.tr("클립 삭제", "Delete clip").into()));
-            if r.app.is_none() {
-                list.push((4, self.tr("원본 앱 버튼판", "Source board").into()));
-            }
-        }
-        if r.app.is_some() && r.record.cell.is_some() {
-            for (id, ko, en) in [
-                (5, "행 삽입", "Insert row"),
-                (6, "열 삽입", "Insert column"),
-                (7, "행 삭제", "Remove row"),
-                (8, "열 삭제", "Remove column"),
-            ] {
-                list.push((id, self.tr(ko, en).into()));
-            }
-        }
-        let Some(action) = menu(self.hwnd, &list, Some((x, y))) else {
-            return Ok(None);
+    fn context(&mut self, binding: Option<Binding>, x: i32, y: i32) -> Result<()> {
+        let Some(board) = self.board() else {
+            return Ok(());
         };
-        if let Some(id) = r.record.item {
-            match action {
-                1 => return Ok(Some(Command::OpenEdit { id })),
-                2 => return Ok(Some(Command::Favorite { id })),
-                3 => {
-                    return Ok(confirm(
-                        self.hwnd,
-                        self.tr("클립을 삭제하시겠습니까?", "Delete this clip?"),
-                    )
-                    .then_some(Command::Delete { id }));
-                }
-                4 => {
-                    if let Some(i) = self.item(id) {
-                        self.activate(&i.app.clone());
-                        self.layout()?;
-                        return Ok(None);
-                    }
-                }
-                _ => {}
-            }
+        let id = binding
+            .and_then(|b| b.record.item)
+            .filter(|&id| self.item(id).is_some());
+        let mut entries = Vec::new();
+        if let Some(id) = id {
+            entries.push((
+                self.tr("이름 수정", "Rename"),
+                Event::Ui(Input::ContextAction(ContextAction::Rename(id))),
+            ));
+            entries.push((
+                self.tr("클립 삭제", "Delete clip"),
+                Event::Ui(Input::ContextAction(ContextAction::Delete(id))),
+            ));
         }
-        if let (Some(app), Some(cell)) = (r.app, r.record.cell) {
-            let axis = if action == 5 || action == 7 {
-                Axis::Row
-            } else {
-                Axis::Column
-            };
-            let add = action < 7;
-            let Some(b) = self.boards.iter().find(|b| b.app == app) else {
-                return Ok(None);
-            };
-            let (index, size) = match axis {
-                Axis::Row => (cell.row, b.rows),
-                Axis::Column => (cell.col, b.cols),
-            };
-            if !add && size <= 1 {
-                return Ok(None);
-            }
-            let count = b
-                .slots
-                .iter()
-                .filter(|s| match axis {
-                    Axis::Row => s.cell.row == index,
-                    Axis::Column => s.cell.col == index,
+        let divider = (!entries.is_empty()).then_some(entries.len());
+        entries.push((
+            self.tr("자동 정렬", "Auto arrange"),
+            Event::Ui(Input::ContextAction(ContextAction::Arrange(
+                board.app.clone(),
+            ))),
+        ));
+        let title = self.tr("ClipEverything 클립 메뉴", "ClipEverything clip menu");
+        self.bridge.hide_tip();
+        let menu = match &mut self.context_menu {
+            Some(menu) => menu,
+            None => self
+                .context_menu
+                .insert(PopupMenu::new(self.hwnd, self.bridge.proxy.clone())?),
+        };
+        menu.show(title, MenuAnchor::Point(POINT { x, y }), entries, divider)
+    }
+    fn context_command(&self, action: ContextAction) -> Option<Command> {
+        match action {
+            ContextAction::Rename(id) if self.item(id).is_some() => Some(Command::OpenEdit { id }),
+            ContextAction::Delete(id) if self.item(id).is_some() => confirm(
+                self.hwnd,
+                self.tr("클립을 삭제하시겠습니까?", "Delete this clip?"),
+            )
+            .then_some(Command::Delete { id }),
+            ContextAction::Arrange(app) if self.active.eq_ignore_ascii_case(&app) => {
+                Some(Command::ArrangeBoard {
+                    app,
+                    cols: i64::from(self.pages.cols),
                 })
-                .count();
-            if !add
-                && count > 0
-                && !confirm(
-                    self.hwnd,
-                    &if self.ko {
-                        format!(
-                            "버튼 {count}개를 배치에서 제거하시겠습니까? 원본 클립은 보존됩니다."
-                        )
-                    } else {
-                        format!("Remove {count} buttons from the board? Their clips are kept.")
-                    },
-                )
-            {
-                return Ok(None);
             }
-            return Ok(Some(Command::ResizeBoard {
-                app,
-                rev: r.rev,
-                axis,
-                index: index + i64::from(add),
-                add,
-                confirmed: !add && count > 0,
-            }));
+            _ => None,
         }
-        Ok(None)
     }
     fn preview(&self, cell: HWND, id: Option<i64>, db: &Connection) -> Result<()> {
         unsafe {
             let mut p = POINT::default();
             GetCursorPos(&mut p);
-            if self.bridge.hover.get() != cell as usize
+            if self.context_menu.as_ref().is_some_and(PopupMenu::visible)
+                || self.bridge.hover.get() != cell as usize
                 || WindowFromPoint(p) != cell
                 || !GetCapture().is_null()
                 || IsWindowVisible(self.hwnd) == 0
@@ -1353,7 +1353,7 @@ impl NativeUi {
                 };
                 let title = self.title(i).trim();
                 let image = if i.shot != 0 || i.has_thumbnail {
-                    db.query_row("SELECT coalesce((SELECT Png FROM ButtonPreviews WHERE ItemId=ClipboardItems.Id),Thumbnail) FROM ClipboardItems WHERE Id=?",[id],|r|r.get(0))?
+                    store::preview_image(db, id)?
                 } else {
                     None
                 };
@@ -1381,23 +1381,6 @@ impl NativeUi {
 }
 fn initial(s: &str) -> String {
     s.chars().next().unwrap_or('◇').to_uppercase().collect()
-}
-fn menu(owner: HWND, entries: &[(usize, String)], at: Option<(i32, i32)>) -> Option<usize> {
-    unsafe {
-        let m = CreatePopupMenu();
-        if m.is_null() {
-            return None;
-        }
-        for (id, label) in entries {
-            AppendMenuW(m, MF_STRING, *id, wide(label).as_ptr());
-        }
-        let mut p = POINT::default();
-        GetCursorPos(&mut p);
-        let (x, y) = at.unwrap_or((p.x, p.y));
-        let n = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0, owner, null());
-        DestroyMenu(m);
-        (n > 0).then_some(n as usize)
-    }
 }
 impl Drop for NativeUi {
     fn drop(&mut self) {

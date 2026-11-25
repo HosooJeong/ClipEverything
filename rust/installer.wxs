@@ -1,5 +1,5 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="ClipEverything" Manufacturer="ClipEverything" Version="0.6.12" Language="1042" Codepage="949" UpgradeCode="F87E8F7A-8788-43C4-B20E-D483C3E324D0" Scope="perUser" InstallerVersion="500">
+  <Package Name="ClipEverything" Manufacturer="ClipEverything" Version="0.6.13" Language="1042" Codepage="949" UpgradeCode="F87E8F7A-8788-43C4-B20E-D483C3E324D0" Scope="perUser" InstallerVersion="500">
     <SummaryInformation Codepage="949" />
     <MajorUpgrade IgnoreLanguage="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="더 최신 버전의 ClipEverything이 설치되어 있습니다." />
     <MediaTemplate EmbedCab="yes" />

@@ -23,11 +23,28 @@ pub struct Board {
     pub revision: i64,
     pub slots: Vec<Slot>,
 }
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Axis {
-    Row,
-    Column,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Viewport {
+    pub origin: Cell,
+    pub rows: i64,
+    pub cols: i64,
+}
+impl Default for Viewport {
+    fn default() -> Self {
+        Self {
+            origin: Cell { row: 0, col: 0 },
+            rows: 3,
+            cols: 4,
+        }
+    }
+}
+
+impl Board {
+    pub fn occupied_size(&self) -> (i64, i64) {
+        self.slots.iter().fold((0, 0), |(cols, rows), slot| {
+            (cols.max(slot.cell.col + 1), rows.max(slot.cell.row + 1))
+        })
+    }
 }
 
 pub fn init(db: &Connection) -> Result<()> {
@@ -44,7 +61,9 @@ pub fn init(db: &Connection) -> Result<()> {
         PRIMARY KEY(App,ItemId),FOREIGN KEY(App,ItemId) REFERENCES ButtonSlots(App,ItemId) ON DELETE CASCADE);
         CREATE TABLE IF NOT EXISTS ButtonPreviews(ItemId INTEGER PRIMARY KEY REFERENCES ClipboardItems(Id) ON DELETE CASCADE,
         Png BLOB NOT NULL,Revision INTEGER NOT NULL DEFAULT 1);
-        CREATE TABLE IF NOT EXISTS BoardViewColumns(App TEXT PRIMARY KEY REFERENCES ButtonBoards(App) ON DELETE CASCADE, Cols INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS BoardViewport(
+        App TEXT PRIMARY KEY REFERENCES ButtonBoards(App) ON DELETE CASCADE,
+        FirstRow INTEGER NOT NULL, FirstCol INTEGER NOT NULL, Rows INTEGER NOT NULL, Cols INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS BoardWindow(Id INTEGER PRIMARY KEY,X INTEGER,Y INTEGER);")?;
     if !installed {
         tx.execute_batch("INSERT INTO ButtonBoards(App,Rows,Cols) SELECT SourceApp,max(3,(count(*)+3)/4),4 FROM ClipboardItems GROUP BY SourceApp;
@@ -107,30 +126,35 @@ pub fn place(tx: &Transaction, app: &str, id: i64, pointer: Option<(i32, i32)>) 
         .iter()
         .map(|s| (s.cell.row, s.cell.col))
         .collect();
-    let display_cols = tx
+    let view = tx
         .query_row(
-            "SELECT Cols FROM BoardViewColumns WHERE App=?",
+            "SELECT FirstRow,FirstCol,Rows,Cols FROM BoardViewport WHERE App=?",
             [app],
-            |r| r.get::<_, i64>(0),
+            |r| {
+                Ok(Viewport {
+                    origin: Cell {
+                        row: r.get(0)?,
+                        col: r.get(1)?,
+                    },
+                    rows: r.get(2)?,
+                    cols: r.get(3)?,
+                })
+            },
         )
         .optional()?
-        .unwrap_or(board.cols)
-        .max(1);
-    let full = occupied.len() as i64 == board.rows * board.cols;
-    if full {
-        tx.execute("UPDATE ButtonBoards SET Rows=Rows+1 WHERE App=?", [app])?;
-    }
+        .unwrap_or_default();
+    let end_row = view.origin.row + view.rows;
+    let end_col = view.origin.col + view.cols;
     let mut best = None;
-    for row in (if full { board.rows } else { 0 })..board.rows + i64::from(full) {
-        for col in 0..board.cols {
+    for row in view.origin.row..end_row {
+        for col in view.origin.col..end_col {
             if occupied.contains(&(row, col)) {
                 continue;
             }
             let score = match (pointer, geometry) {
                 (Some((x, y)), Some((ox, oy, dx, dy))) => {
-                    let index = row * board.cols + col;
-                    (ox + (index % display_cols) as f64 * dx - f64::from(x)).powi(2)
-                        + (oy + (index / display_cols) as f64 * dy - f64::from(y)).powi(2)
+                    (ox + (col - view.origin.col) as f64 * dx - f64::from(x)).powi(2)
+                        + (oy + (row - view.origin.row) as f64 * dy - f64::from(y)).powi(2)
                 }
                 _ => 0.0,
             };
@@ -139,7 +163,14 @@ pub fn place(tx: &Transaction, app: &str, id: i64, pointer: Option<(i32, i32)>) 
             }
         }
     }
-    let (_, row, col) = best.expect("one free cell after expansion");
+    let (_, row, col) = best.unwrap_or_else(|| {
+        let (row, col) = (end_row..)
+            .flat_map(|row| (view.origin.col..end_col).map(move |col| (row, col)))
+            .find(|cell| !occupied.contains(cell))
+            .expect("finite board has an available cell below the viewport");
+        (0., row, col)
+    });
+    extend(tx, app, Cell { row, col })?;
     tx.execute(
         "INSERT INTO ButtonSlots(App,ItemId,RowNo,ColNo) VALUES(?,?,?,?)",
         params![app, id, row, col],
@@ -154,22 +185,12 @@ pub fn place(tx: &Transaction, app: &str, id: i64, pointer: Option<(i32, i32)>) 
     }
     bump(tx, app)
 }
-pub fn measure(db: &mut Connection, app: &str, geometry: [f64; 4]) -> Result<bool> {
-    measure_view(db, app, geometry, None)
-}
-pub fn measure_view(
-    db: &mut Connection,
-    app: &str,
-    geometry: [f64; 4],
-    columns: Option<i64>,
-) -> Result<bool> {
+pub fn measure(db: &mut Connection, app: &str, geometry: [f64; 4], view: Viewport) -> Result<bool> {
     let tx = db.transaction()?;
-    if let Some(cols) = columns.filter(|c| *c > 0) {
-        tx.execute(
-            "INSERT OR REPLACE INTO BoardViewColumns VALUES(?,?)",
-            params![app, cols],
-        )?;
-    }
+    tx.execute(
+        "INSERT OR REPLACE INTO BoardViewport VALUES(?,?,?,?,?)",
+        params![app, view.origin.row, view.origin.col, view.rows, view.cols],
+    )?;
     let [x, y, dx, dy] = geometry;
     tx.execute(
         "UPDATE ButtonBoards SET OriginX=?,OriginY=?,StepX=?,StepY=? WHERE App=?",
@@ -198,14 +219,18 @@ fn check_revision(b: &Board, rev: i64) -> Result<()> {
     ensure!(b.revision == rev, "Board changed. Try again.");
     Ok(())
 }
+fn extend(db: &Connection, app: &str, cell: Cell) -> Result<()> {
+    db.execute(
+        "UPDATE ButtonBoards SET Rows=max(Rows,?),Cols=max(Cols,?) WHERE App=?",
+        params![cell.row + 1, cell.col + 1, app],
+    )?;
+    Ok(())
+}
 pub fn move_slot(db: &mut Connection, app: &str, rev: i64, id: i64, to: Cell) -> Result<()> {
     let tx = db.transaction()?;
     let b = load(&tx, app)?;
     check_revision(&b, rev)?;
-    ensure!(
-        (0..b.rows).contains(&to.row) && (0..b.cols).contains(&to.col),
-        "Invalid destination"
-    );
+    ensure!(to.row >= 0 && to.col >= 0, "Invalid destination");
     let from = b
         .slots
         .iter()
@@ -224,52 +249,34 @@ pub fn move_slot(db: &mut Connection, app: &str, rev: i64, id: i64, to: Cell) ->
         "INSERT INTO ButtonSlots VALUES(?,?,?,?)",
         params![app, id, to.row, to.col],
     )?;
+    extend(&tx, app, to)?;
     bump(&tx, app)?;
     tx.commit()?;
     Ok(())
 }
-pub fn resize(
-    db: &mut Connection,
-    app: &str,
-    rev: i64,
-    axis: Axis,
-    index: i64,
-    add: bool,
-    confirmed: bool,
-) -> Result<()> {
+pub fn arrange(db: &mut Connection, app: &str, cols: i64) -> Result<()> {
+    ensure!(cols > 0, "Invalid column count");
     let tx = db.transaction()?;
-    let b = load(&tx, app)?;
-    check_revision(&b, rev)?;
-    let (size, col, field) = match axis {
-        Axis::Row => (b.rows, "RowNo", "Rows"),
-        Axis::Column => (b.cols, "ColNo", "Cols"),
-    };
-    ensure!(
-        index >= 0 && (index < size || (add && index == size)),
-        "Invalid index"
-    );
-    if !add {
-        ensure!(size > 1, "At least one row and column are required");
-        let occupied=b.slots.iter().any(|s|match axis{Axis::Row=>s.cell.row,Axis::Column=>s.cell.col}==index);
-        ensure!(!occupied || confirmed, "Occupied line needs confirmation");
-        tx.execute(
-            &format!("DELETE FROM ButtonSlots WHERE App=? AND {col}=?"),
-            params![app, index],
-        )?;
+    let ids = tx
+        .prepare(
+            "SELECT i.Id FROM ClipboardItems i
+             LEFT JOIN ButtonSlots s ON s.App=?1 AND s.ItemId=i.Id
+             WHERE s.ItemId IS NOT NULL OR i.SourceApp=?1 COLLATE NOCASE
+             ORDER BY s.ItemId IS NULL,s.RowNo,s.ColNo,i.LastCopiedAt DESC,i.Id DESC",
+        )?
+        .query_map([app], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    tx.execute("DELETE FROM ButtonSlots WHERE App=?", [app])?;
+    {
+        let mut insert = tx.prepare("INSERT INTO ButtonSlots VALUES(?,?,?,?)")?;
+        for (n, id) in ids.iter().enumerate() {
+            let n = n as i64;
+            insert.execute(params![app, id, n / cols, n % cols])?;
+        }
     }
-    // Stage shifted cells in the negative range to avoid transient UNIQUE collisions.
-    let shift = if add { 1 } else { -1 };
     tx.execute(
-        &format!("UPDATE ButtonSlots SET {col}=-{col}-1 WHERE App=? AND {col}>=?"),
-        params![app, index],
-    )?;
-    tx.execute(
-        &format!("UPDATE ButtonSlots SET {col}=-{col}-1+? WHERE App=? AND {col}<0"),
-        params![shift, app],
-    )?;
-    tx.execute(
-        &format!("UPDATE ButtonBoards SET {field}={field}+?,Revision=Revision+1 WHERE App=?"),
-        params![shift, app],
+        "UPDATE ButtonBoards SET Rows=?,Cols=?,Revision=Revision+1 WHERE App=?",
+        params![((ids.len() as i64 + cols - 1) / cols).max(1), cols, app],
     )?;
     tx.commit()?;
     Ok(())

@@ -1,8 +1,8 @@
-//! Keep SQLite write waits out of the Win32/WebView message loop. One writer
-//! preserves the order of drops, structural edits and geometry measurements.
+//! Keep SQLite write waits out of the Win32 message loop and preserve the order
+//! of drops, auto arrange requests and viewport measurements.
 use crate::Event;
 use anyhow::{Context, Result};
-use clip_everything::board::{self, Axis, Cell};
+use clip_everything::board::{self, Cell, Viewport};
 use rusqlite::{Connection, OpenFlags, params};
 use std::{
     path::Path,
@@ -19,18 +19,14 @@ pub enum LayoutWrite {
         id: i64,
         to: Cell,
     },
-    Resize {
+    Arrange {
         app: String,
-        rev: i64,
-        axis: Axis,
-        index: i64,
-        add: bool,
-        confirmed: bool,
+        cols: i64,
     },
     Measure {
         app: String,
         geometry: [f64; 4],
-        columns: i64,
+        viewport: Viewport,
     },
     Position {
         x: i32,
@@ -46,35 +42,28 @@ impl LayoutWrite {
             _ => false,
         }
     }
-    // Only changes to slot data need a frontend refresh.
-    fn apply(self, db: &mut Connection) -> Result<bool> {
+    fn apply(self, db: &mut Connection) -> Result<Option<Event>> {
         match self {
             Self::Move { app, rev, id, to } => {
                 board::move_slot(db, &app, rev, id, to)?;
-                Ok(true)
+                Ok(Some(Event::LayoutChanged(Ok(None))))
             }
-            Self::Resize {
-                app,
-                rev,
-                axis,
-                index,
-                add,
-                confirmed,
-            } => {
-                board::resize(db, &app, rev, axis, index, add, confirmed)?;
-                Ok(true)
+            Self::Arrange { app, cols } => {
+                board::arrange(db, &app, cols)?;
+                Ok(Some(Event::LayoutChanged(Ok(Some(app)))))
             }
             Self::Measure {
                 app,
                 geometry,
-                columns,
-            } => board::measure_view(db, &app, geometry, Some(columns)),
+                viewport,
+            } => Ok(board::measure(db, &app, geometry, viewport)?
+                .then_some(Event::LayoutChanged(Ok(None)))),
             Self::Position { x, y } => {
                 db.execute(
                     "INSERT OR REPLACE INTO BoardWindow VALUES(1,?,?)",
                     params![x, y],
                 )?;
-                Ok(false)
+                Ok(None)
             }
         }
     }
@@ -107,12 +96,12 @@ impl LayoutWriter {
                         }
                     }
                     for task in batch.drain(..) {
-                        let result = match task.apply(&mut db) {
-                            Ok(false) => continue,
-                            Ok(true) => Ok(()),
-                            Err(e) => Err(e.to_string()),
+                        let event = match task.apply(&mut db) {
+                            Ok(None) => continue,
+                            Ok(Some(event)) => event,
+                            Err(e) => Event::LayoutChanged(Err(e.to_string())),
                         };
-                        if proxy.send_event(Event::LayoutChanged(result)).is_err() {
+                        if proxy.send_event(event).is_err() {
                             return;
                         }
                     }

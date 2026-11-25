@@ -4,8 +4,13 @@ use super::{
 };
 use crate::{Command, Event, Settings};
 use anyhow::{Result, ensure};
-use clip_everything::{clipboard::wide, preferences::Shortcut, store::Item};
+use clip_everything::{
+    clipboard::wide,
+    preferences::{Shortcut, TileContent},
+    store::Item,
+};
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     ptr::null_mut,
 };
@@ -16,6 +21,13 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{Controls::*, Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*},
 };
+
+const HELP_USAGE: i32 = 141;
+const HELP_LICENSE: i32 = 142;
+const HELP_NOTICES: i32 = 143;
+const HELP_TEXT: i32 = 144;
+const PROJECT_LICENSE: &str = include_str!("../../../LICENSE");
+const THIRD_PARTY_NOTICES: &str = include_str!("../../THIRD-PARTY-NOTICES.txt");
 
 thread_local! {static ACTIVE:Cell<HWND>=const{Cell::new(null_mut())};}
 pub fn translate(msg: *const std::ffi::c_void) -> bool {
@@ -48,6 +60,13 @@ struct Bridge {
     proxy: EventLoopProxy<Event>,
     pic: RefCell<Option<Bitmap>>,
     korean: Cell<bool>,
+    help_page: Cell<Option<i32>>,
+}
+fn dialog_button(id: i32) -> bool {
+    matches!(
+        id,
+        1 | 2 | 120 | 121 | 134 | 135 | HELP_USAGE..=HELP_NOTICES
+    )
 }
 unsafe extern "system" fn procedure(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> isize {
     unsafe {
@@ -67,10 +86,7 @@ unsafe extern "system" fn procedure(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> 
                 } else {
                     (w & 0xffff) as i32
                 };
-                if msg == WM_CLOSE
-                    || (w >> 16) == BN_CLICKED as usize
-                        && matches!(id, 1 | 2 | 120 | 121 | 134 | 135)
-                {
+                if msg == WM_CLOSE || (w >> 16) == BN_CLICKED as usize && dialog_button(id) {
                     let _ = bridge
                         .proxy
                         .send_event(Event::Ui(Input::Dialog(h as isize, id)));
@@ -84,12 +100,11 @@ unsafe extern "system" fn procedure(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> 
             }
             WM_NOTIFY if l != 0 => {
                 let header = &*(l as *const NMHDR);
-                if header.code == NM_CUSTOMDRAW
-                    && matches!(header.idFrom, 1 | 2 | 120 | 121 | 134 | 135)
-                {
+                let id = header.idFrom as i32;
+                if header.code == NM_CUSTOMDRAW && dialog_button(id) {
                     let draw = &*(l as *const NMCUSTOMDRAW);
                     if draw.dwDrawStage == CDDS_PREPAINT {
-                        draw_dialog_button(draw, header.idFrom as i32);
+                        draw_dialog_button(draw, id, id == 1 || bridge.help_page.get() == Some(id));
                         SetWindowLongPtrW(h, DWLP_MSGRESULT as i32, CDRF_SKIPDEFAULT as isize);
                         return 1;
                     }
@@ -203,7 +218,7 @@ fn draw_section_heading(draw: &DRAWITEMSTRUCT) {
         SelectObject(dc, previous);
     }
 }
-fn draw_dialog_button(draw: &NMCUSTOMDRAW, id: i32) {
+fn draw_dialog_button(draw: &NMCUSTOMDRAW, id: i32, primary: bool) {
     unsafe {
         let h = draw.hdr.hwndFrom;
         let dc = draw.hdc;
@@ -211,7 +226,6 @@ fn draw_dialog_button(draw: &NMCUSTOMDRAW, id: i32) {
         let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(h).max(96) as i32;
         let px = |n: i32| (n * dpi + 48) / 96;
         let contrast = Contrast::read();
-        let primary = id == 1;
         let pressed = draw.uItemState & CDIS_SELECTED != 0;
         let hover = draw.uItemState & CDIS_HOT != 0;
         let bg = if primary {
@@ -319,6 +333,7 @@ impl Dialogs {
                 proxy,
                 pic: RefCell::new(None),
                 korean: Cell::new(false),
+                help_page: Cell::new(None),
             }),
             editing: None,
             shot: "keep",
@@ -361,6 +376,7 @@ impl Dialogs {
                 DestroyWindow(self.hwnd);
                 self.hwnd = null_mut();
                 self.editing = None;
+                self.bridge.help_page.set(None);
                 self.shot = "keep";
                 *self.bridge.pic.borrow_mut() = None;
             }
@@ -401,6 +417,7 @@ impl Dialogs {
             (116, "로그인 시 실행", "Start at sign-in"),
             (117, "창을 닫으면 트레이에 유지", "Keep in tray on close"),
             (118, "표시 언어", "Language"),
+            (125, "버튼에 표시할 내용", "Button content"),
             (120, "전체 기록 삭제", "Clear history"),
             (121, "앱 종료", "Quit app"),
             (1, "저장", "Save"),
@@ -442,9 +459,83 @@ impl Dialogs {
                 },
                 0,
             );
+            let content = self.ctrl(126);
+            for (k, en) in [
+                ("아이콘", "Icon"),
+                ("미리보기", "Preview"),
+                ("표시 안 함", "None"),
+            ] {
+                SendMessageW(
+                    content,
+                    CB_ADDSTRING,
+                    0,
+                    wide(if ko { k } else { en }).as_ptr() as isize,
+                );
+            }
+            SendMessageW(
+                content,
+                CB_SETCURSEL,
+                match s.tile_content {
+                    TileContent::Icon => 0,
+                    TileContent::Preview => 1,
+                    TileContent::None => 2,
+                },
+                0,
+            );
         }
         self.visibility(true);
         Ok(())
+    }
+    pub fn help(&mut self, settings: &Settings, ko: bool) -> Result<()> {
+        self.create(203)?;
+        set(
+            self.hwnd,
+            if ko {
+                "ClipEverything 도움말"
+            } else {
+                "ClipEverything help"
+            },
+        );
+        for (id, k, e) in [
+            (HELP_USAGE, "사용 방법", "How to use"),
+            (HELP_LICENSE, "저작권·라이선스", "Copyright and license"),
+            (HELP_NOTICES, "오픈소스 고지", "Open source notices"),
+            (2, "닫기", "Close"),
+        ] {
+            set(self.ctrl(id), if ko { k } else { e });
+        }
+        let body = self.ctrl(HELP_TEXT);
+        unsafe {
+            let dpi = windows_sys::Win32::UI::HiDpi::GetDpiForWindow(self.hwnd).max(96) as usize;
+            let pad = (8 * dpi + 48) / 96;
+            SendMessageW(
+                body,
+                EM_SETMARGINS,
+                (EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize,
+                (pad | pad << 16) as isize,
+            );
+        }
+        self.help_page(HELP_USAGE, settings, ko);
+        self.visibility(true);
+        Ok(())
+    }
+    fn help_page(&self, id: i32, settings: &Settings, ko: bool) {
+        let content: Cow<'_, str> = match id {
+            HELP_LICENSE => PROJECT_LICENSE.into(),
+            HELP_NOTICES => THIRD_PARTY_NOTICES.into(),
+            _ => help_text(settings, ko).into(),
+        };
+        self.bridge.help_page.set(Some(id));
+        let body = self.ctrl(HELP_TEXT);
+        set(body, &content.replace("\r\n", "\n").replace('\n', "\r\n"));
+        unsafe {
+            CheckRadioButton(self.hwnd, HELP_USAGE, HELP_NOTICES, id);
+            for button in HELP_USAGE..=HELP_NOTICES {
+                InvalidateRect(self.ctrl(button), std::ptr::null(), 0);
+            }
+            SendMessageW(body, EM_SETSEL, 0, 0);
+            SendMessageW(body, WM_VSCROLL, SB_TOP as usize, 0);
+        }
     }
     pub fn editor(
         &mut self,
@@ -503,9 +594,12 @@ impl Dialogs {
         self.shot = "replace";
         self.picture(Some(bytes));
     }
-    pub fn command(&mut self, id: i32, ko: bool) -> Result<Option<Command>> {
+    pub fn command(&mut self, id: i32, settings: &Settings, ko: bool) -> Result<Option<Command>> {
         match id {
             2 => self.close(),
+            HELP_USAGE..=HELP_NOTICES if self.bridge.help_page.get().is_some() => {
+                self.help_page(id, settings, ko);
+            }
             120 => {
                 if confirm(
                     self.hwnd,
@@ -546,6 +640,12 @@ impl Dialogs {
                     2 => "en",
                     _ => "system",
                 };
+                let tile_content = match unsafe { SendMessageW(self.ctrl(126), CB_GETCURSEL, 0, 0) }
+                {
+                    1 => TileContent::Preview,
+                    2 => TileContent::None,
+                    _ => TileContent::Icon,
+                };
                 return Ok(Some(Command::Settings {
                     value: Settings {
                         copy_mods: capture.mods,
@@ -557,6 +657,7 @@ impl Dialogs {
                         notify: checked(115),
                         startup: checked(116),
                         close_to_tray: checked(117),
+                        tile_content,
                     },
                 }));
             }
@@ -573,6 +674,42 @@ impl Dialogs {
                 MB_OK | MB_ICONWARNING,
             );
         }
+    }
+}
+
+fn help_text(settings: &Settings, ko: bool) -> String {
+    let [capture, board] = settings.keys().map(Shortcut::label);
+    let version = env!("CARGO_PKG_VERSION");
+    if ko {
+        format!(
+            "ClipEverything {version}\n\n\
+클립 등록\n\
+1. 저장할 문구, 표, 이미지 또는 파일을 선택하고 {capture}를 누릅니다.\n\
+2. 등록창에서 이름을 입력하고 저장합니다. 태그를 붙이거나 영역 캡처로 미리보기를 만들 수 있습니다.\n\n\
+다시 붙여넣기\n\
+1. 붙여넣을 위치에 커서를 두고 {board}를 누릅니다.\n\
+2. 버튼판에서 클립을 클릭하거나 방향키로 선택하고 Enter를 누릅니다.\n\
+트레이에서 버튼판을 연 경우에는 클립을 눌러 복사한 뒤 원하는 창에서 Ctrl+V를 누릅니다.\n\n\
+버튼판 관리\n\
+왼쪽에서 프로그램을 고릅니다. Ctrl+F로 이름이나 태그를 검색하고, 버튼에 마우스를 올려 미리보기를 확인합니다.\n\
+버튼을 끌어 위치를 바꿉니다. 우클릭 메뉴에서 이름 수정, 삭제, 자동 정렬을 할 수 있습니다.\n\n\
+설정에서 단축키와 트레이 동작을 바꿀 수 있습니다. 버튼 이름 위에는 아이콘이나 미리보기를 표시하거나, 이름만 표시할 수 있습니다."
+        )
+    } else {
+        format!(
+            "ClipEverything {version}\n\n\
+Save a clip\n\
+1. Select the text, table, image, or files and press {capture}.\n\
+2. Name your clip and save it. You can add tags or capture a region for the preview.\n\n\
+Paste a saved clip\n\
+1. Put your cursor where you want to paste and press {board}.\n\
+2. Click a clip, or select one with the arrow keys and press Enter.\n\
+If you opened the board from the tray, click a clip to copy it and press Ctrl+V in the destination window.\n\n\
+Manage the board\n\
+Select a program on the left. Use Ctrl+F to search names or tags, and hover over a clip to preview it.\n\
+Drag clips to move them. Right-click to rename, delete, or auto arrange them.\n\n\
+Open Settings to change shortcuts, tray behavior, or what appears above each button name."
+        )
     }
 }
 pub fn confirm(h: HWND, s: &str) -> bool {

@@ -1,6 +1,10 @@
 use clip_everything::clipboard::wide;
 use std::{cell::RefCell, collections::HashMap, mem::size_of, ptr::null_mut};
-use windows_sys::Win32::{Foundation::*, Graphics::Gdi::*};
+use windows_sys::Win32::{
+    Foundation::*,
+    Graphics::Gdi::*,
+    UI::WindowsAndMessaging::{ULW_ALPHA, UpdateLayeredWindow},
+};
 
 #[derive(Clone, Copy)]
 pub struct Contrast(pub bool);
@@ -62,7 +66,7 @@ struct TileSurface {
     radius: i32,
     stroke: i32,
     fill: u32,
-    outside: u32,
+    outside: Option<u32>,
     border: u32,
 }
 
@@ -72,7 +76,7 @@ impl TileSurface {
         let half_h = self.height as f32 * 0.5;
         let radius = (self.radius as f32).min(half_w).min(half_h);
         let (outside, border, fill) = (
-            self.outside.to_le_bytes(),
+            self.outside.unwrap_or_default().to_le_bytes(),
             self.border.to_le_bytes(),
             self.fill.to_le_bytes(),
         );
@@ -84,13 +88,23 @@ impl TileSurface {
             let distance = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - radius;
             let outer = (0.5 - distance).clamp(0.0, 1.0);
             let inner = (0.5 - distance - self.stroke as f32).clamp(0.0, 1.0);
+            let alpha = if self.outside.is_none() { outer } else { 1.0 };
+            if alpha == 0.0 {
+                return image::Rgba([0, 0, 0, 0]);
+            }
             let channel = |i: usize| {
-                (f32::from(outside[i]) * (1.0 - outer)
+                ((f32::from(outside[i]) * (1.0 - outer)
                     + f32::from(border[i]) * (outer - inner)
                     + f32::from(fill[i]) * inner)
+                    / alpha)
                     .round() as u8
             };
-            image::Rgba([channel(0), channel(1), channel(2), 255])
+            image::Rgba([
+                channel(0),
+                channel(1),
+                channel(2),
+                (alpha * 255.0).round() as u8,
+            ])
         })
     }
 
@@ -121,6 +135,28 @@ impl TileSurface {
         });
     }
 }
+pub(super) fn rounded_panel(
+    width: i32,
+    height: i32,
+    radius: i32,
+    stroke: i32,
+    fill: u32,
+    border: u32,
+) -> Option<Bitmap> {
+    Bitmap::from_rgba(
+        &TileSurface {
+            width: width as u32,
+            height: height as u32,
+            radius,
+            stroke,
+            fill,
+            border,
+            outside: None,
+        }
+        .rasterize(),
+    )
+}
+
 pub fn search_field(dc: HDC, r: RECT, dpi: i32, focus: bool, contrast: Contrast) {
     if r.right <= r.left || r.bottom <= r.top {
         return;
@@ -185,6 +221,13 @@ pub struct Bitmap {
     pub width: i32,
     pub height: i32,
 }
+const ALPHA_BLEND: BLENDFUNCTION = BLENDFUNCTION {
+    BlendOp: AC_SRC_OVER as u8,
+    BlendFlags: 0,
+    SourceConstantAlpha: 255,
+    AlphaFormat: AC_SRC_ALPHA as u8,
+};
+
 impl Bitmap {
     pub fn decode(bytes: &[u8], width: u32, height: u32) -> Option<Self> {
         let img = image::load_from_memory(bytes).ok()?;
@@ -248,13 +291,26 @@ impl Bitmap {
                 0,
                 self.width,
                 self.height,
-                BLENDFUNCTION {
-                    BlendOp: AC_SRC_OVER as u8,
-                    BlendFlags: 0,
-                    SourceConstantAlpha: 255,
-                    AlphaFormat: AC_SRC_ALPHA as u8,
-                },
+                ALPHA_BLEND,
             );
+        }
+    }
+    pub(super) fn update_layer(&self, hwnd: HWND, position: POINT) -> bool {
+        unsafe {
+            UpdateLayeredWindow(
+                hwnd,
+                null_mut(),
+                &position,
+                &SIZE {
+                    cx: self.width,
+                    cy: self.height,
+                },
+                self.dc,
+                &POINT::default(),
+                0,
+                &ALPHA_BLEND,
+                ULW_ALPHA,
+            ) != 0
         }
     }
 }
@@ -277,6 +333,7 @@ pub enum Symbol {
     OpenSidebar,
     CloseSidebar,
     Settings,
+    Help,
     Search,
     Previous,
     Next,
@@ -290,6 +347,7 @@ impl Symbol {
         match self {
             Self::Search => include_bytes!(concat!(env!("OUT_DIR"), "/search.alpha")),
             Self::Settings => include_bytes!(concat!(env!("OUT_DIR"), "/settings.alpha")),
+            Self::Help => include_bytes!(concat!(env!("OUT_DIR"), "/help.alpha")),
             Self::Previous => include_bytes!(concat!(env!("OUT_DIR"), "/previous.alpha")),
             Self::Copied => include_bytes!(concat!(env!("OUT_DIR"), "/copied.alpha")),
             Self::Capture => include_bytes!(concat!(env!("OUT_DIR"), "/capture.alpha")),
@@ -335,6 +393,7 @@ pub struct Face {
     pub label_alpha: Option<u8>,
     pub count: Option<String>,
     pub icon: Option<i64>,
+    pub preview: Option<PreviewKey>,
     pub active: bool,
     pub solid: bool,
     pub centered: bool,
@@ -343,6 +402,7 @@ pub struct Face {
     pub fallback: String,
     pub blank: bool,
 }
+pub type PreviewKey = (i64, i64);
 pub struct ButtonState {
     pub drop_here: bool,
     pub copied: bool,
@@ -425,7 +485,7 @@ fn draw_face(
         face.symbol,
         Some(Symbol::OpenSidebar | Symbol::CloseSidebar)
     );
-    let rail = face.solid || panel || matches!(face.symbol, Some(Symbol::Settings));
+    let rail = face.solid || panel || matches!(face.symbol, Some(Symbol::Settings | Symbol::Help));
     let bg = if pressed {
         0xf7e1c9
     } else if drop_here {
@@ -520,7 +580,7 @@ fn draw_face(
                 radius: px(8),
                 stroke,
                 fill: bg,
-                outside: contrast.color(BG, COLOR_WINDOW),
+                outside: Some(contrast.color(BG, COLOR_WINDOW)),
                 border,
             }
             .paint(dc, r);
@@ -611,6 +671,9 @@ fn draw_face(
         } else {
             (r.top + r.bottom - icon_size) / 2
         };
+        let mut artwork_bottom =
+            (copied || face.symbol.is_some() || image.is_some() || !face.fallback.is_empty())
+                .then_some(y + icon_size);
         if copied {
             Symbol::Copied.paint(dc, x, y, icon_size, contrast.color(0x507423, fg_role));
         } else if let Some(symbol) = face.symbol {
@@ -630,7 +693,21 @@ fn draw_face(
                 },
             );
         } else if let Some(img) = image {
-            img.draw(dc, x, y, icon_size, icon_size)
+            if face.preview.is_some() {
+                let mut metrics = TEXTMETRICW::default();
+                GetTextMetricsW(dc, &mut metrics);
+                let available_w = (r.right - r.left - px(10)).max(1);
+                let available_h = (r.bottom - y - metrics.tmHeight - px(5)).max(1);
+                let scale = (f64::from(available_w) / f64::from(img.width))
+                    .min(f64::from(available_h) / f64::from(img.height))
+                    .min(1.0);
+                let w = ((f64::from(img.width) * scale) as i32).max(1);
+                let h = ((f64::from(img.height) * scale) as i32).max(1);
+                img.draw(dc, (r.left + r.right - w) / 2, y, w, h);
+                artwork_bottom = Some(y + h);
+            } else {
+                img.draw(dc, x, y, icon_size, icon_size);
+            }
         } else if !face.fallback.is_empty() {
             let mut box_ = RECT {
                 left: x,
@@ -659,15 +736,18 @@ fn draw_face(
         if face.stacked {
             text.left += px(4);
             text.right -= px(4);
-            text.top = y + icon_size + px(3);
             text.bottom -= px(2);
-            DrawTextW(
-                dc,
-                wide(&face.text).as_ptr(),
-                -1,
-                &mut text,
-                DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX,
-            );
+            let label = wide(&face.text);
+            let flags = DT_CENTER | DT_WORDBREAK | DT_EDITCONTROL | DT_END_ELLIPSIS | DT_NOPREFIX;
+            if let Some(bottom) = artwork_bottom {
+                text.top = bottom + px(3);
+            } else {
+                text.top += px(2);
+                let mut bounds = text;
+                DrawTextW(dc, label.as_ptr(), -1, &mut bounds, flags | DT_CALCRECT);
+                text.top += (text.bottom - bounds.bottom).max(0) / 2;
+            }
+            DrawTextW(dc, label.as_ptr(), -1, &mut text, flags);
         } else {
             text.left += px(
                 if face.icon.is_some() || face.symbol.is_some() || !face.fallback.is_empty() {
@@ -717,6 +797,30 @@ fn draw_face(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popup_corners_have_fractional_alpha_at_every_scale() {
+        for dpi in [96, 120, 144, 192] {
+            let px = |n| (n * dpi + 48) / 96;
+            let img = TileSurface {
+                width: px(174) as u32,
+                height: px(116) as u32,
+                radius: px(11),
+                stroke: px(1),
+                fill: 0xffffff,
+                outside: None,
+                border: 0xe9e1d9,
+            }
+            .rasterize();
+            assert_eq!(*img.get_pixel(0, 0), image::Rgba([0, 0, 0, 0]));
+            assert!(img.pixels().any(|p| p[3] > 0 && p[3] < 255));
+            let inset = px(5) as u32;
+            assert_eq!(
+                *img.get_pixel(inset, inset),
+                image::Rgba([255, 255, 255, 255])
+            );
+        }
+    }
 
     #[test]
     fn success_glyph_replaces_the_icon_and_contrast_focus_uses_system_colors() {

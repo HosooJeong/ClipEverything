@@ -1,4 +1,8 @@
-use crate::{Event, clipboard::wide};
+use crate::{
+    Event,
+    clipboard::wide,
+    native_ui::{MenuAnchor, PopupMenu},
+};
 use anyhow::{Result, ensure};
 pub use clip_everything::preferences::Settings;
 use clip_everything::preferences::register_pair;
@@ -6,46 +10,69 @@ use std::{
     mem::size_of,
     ptr::{null, null_mut},
 };
-use tao::event_loop::EventLoopProxy;
+use tao::{
+    dpi::PhysicalSize,
+    event_loop::EventLoopProxy,
+    platform::windows::{IconExtWindows, WindowExtWindows},
+    window::{Icon, Window},
+};
 use windows_sys::Win32::{
     Foundation::*,
-    System::Registry::*,
-    UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
+    Graphics::Gdi::PtInRect,
+    System::{LibraryLoader::GetModuleHandleW, Registry::*},
+    UI::{
+        Controls::{LIM_SMALL, LoadIconMetric},
+        HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
+        Input::KeyboardAndMouse::*,
+        Shell::*,
+        WindowsAndMessaging::*,
+    },
 };
 
 const TRAY: u32 = WM_APP + 17;
 pub const ACTIVATE: u32 = WM_APP + 18;
+const APP_ICON_ID: u16 = 101;
+
+pub fn set_window_icons(window: &Window) -> Result<()> {
+    let dpi = unsafe { GetDpiForWindow(window.hwnd() as HWND) }.max(96);
+    let load = |x, y| {
+        let size = unsafe {
+            PhysicalSize::new(
+                GetSystemMetricsForDpi(x, dpi) as u32,
+                GetSystemMetricsForDpi(y, dpi) as u32,
+            )
+        };
+        Icon::from_resource(APP_ICON_ID, Some(size))
+    };
+    let small = load(SM_CXSMICON, SM_CYSMICON)?;
+    let large = load(SM_CXICON, SM_CYICON)?;
+    window.set_window_icon(Some(small));
+    window.set_taskbar_icon(Some(large));
+    Ok(())
+}
+
 pub struct Shell {
     hwnd: HWND,
     icon: HICON,
     proxy: Box<EventLoopProxy<Event>>,
+    menu: Option<PopupMenu>,
 }
 impl Shell {
     pub fn new(hwnd: HWND, proxy: EventLoopProxy<Event>) -> Result<Self> {
         unsafe {
-            // Extract the largest embedded icon image from the ICO directory.
-            let ico = include_bytes!("../../resources/app.ico");
-            let n = u16::from_le_bytes([ico[4], ico[5]]) as usize;
-            let entry = ico[6..6 + 16 * n]
-                .chunks_exact(16)
-                .max_by_key(|e| if e[0] == 0 { 256 } else { e[0] as usize })
-                .unwrap();
-            let start = u32::from_le_bytes(entry[12..16].try_into()?) as usize;
-            let len = u32::from_le_bytes(entry[8..12].try_into()?) as usize;
-            let icon = CreateIconFromResourceEx(
-                ico[start..start + len].as_ptr(),
-                len as u32,
-                1,
-                0x30000,
-                32,
-                32,
-                0,
+            let mut icon = null_mut();
+            let loaded = LoadIconMetric(
+                GetModuleHandleW(null()),
+                APP_ICON_ID as usize as *const u16,
+                LIM_SMALL,
+                &mut icon,
             );
-            ensure!(!icon.is_null(), "Unable to load tray icon");
+            ensure!(loaded >= 0 && !icon.is_null(), "Unable to load tray icon");
             let shell = Self {
                 hwnd,
                 icon,
                 proxy: Box::new(proxy),
+                menu: None,
             };
             ensure!(
                 SetWindowSubclass(
@@ -92,49 +119,60 @@ impl Shell {
             Shell_NotifyIconW(NIM_MODIFY, &d);
         }
     }
-    pub fn menu(&self, ko: bool) {
+    pub fn menu(&mut self, ko: bool) -> Result<()> {
+        let mut cursor = POINT::default();
+        let mut anchor = RECT::default();
         unsafe {
-            let m = CreatePopupMenu();
-            if m.is_null() {
-                return;
+            if GetCursorPos(&mut cursor) == 0 {
+                return Ok(());
             }
-            for (id, label) in [
-                (
-                    1,
-                    if ko {
-                        "버튼판 열기"
-                    } else {
-                        "Open button board"
-                    },
-                ),
-                (2, if ko { "설정" } else { "Settings" }),
-                (3, if ko { "종료" } else { "Quit" }),
-            ] {
-                AppendMenuW(m, MF_STRING, id, wide(label).as_ptr());
-            }
-            let mut p = POINT::default();
-            GetCursorPos(&mut p);
-            SetForegroundWindow(self.hwnd);
-            let id = TrackPopupMenu(
-                m,
-                TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                p.x,
-                p.y,
-                0,
-                self.hwnd,
-                null(),
-            );
-            DestroyMenu(m);
-            let event = match id {
-                1 => Some(Event::Open(false)),
-                2 => Some(Event::Open(true)),
-                3 => Some(Event::Quit),
-                _ => None,
+            let id = NOTIFYICONIDENTIFIER {
+                cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
+                hWnd: self.hwnd,
+                uID: 1,
+                ..Default::default()
             };
-            if let Some(e) = event {
-                let _ = self.proxy.send_event(e);
+            if Shell_NotifyIconGetRect(&id, &mut anchor) < 0 || PtInRect(&anchor, cursor) == 0 {
+                anchor = RECT {
+                    left: cursor.x,
+                    top: cursor.y,
+                    right: cursor.x,
+                    bottom: cursor.y,
+                };
             }
         }
+        let menu = match &mut self.menu {
+            Some(menu) => menu,
+            None => self
+                .menu
+                .insert(PopupMenu::new(null_mut(), self.proxy.as_ref().clone())?),
+        };
+        let title = if ko {
+            "ClipEverything 트레이 메뉴"
+        } else {
+            "ClipEverything tray menu"
+        };
+        let items = vec![
+            (
+                if ko {
+                    "버튼판 열기"
+                } else {
+                    "Open button board"
+                },
+                Event::Open(false),
+            ),
+            (if ko { "설정" } else { "Settings" }, Event::Open(true)),
+            (if ko { "종료" } else { "Quit" }, Event::Quit),
+        ];
+        menu.show(
+            title,
+            MenuAnchor::Tray {
+                rect: anchor,
+                cursor,
+            },
+            items,
+            Some(2),
+        )
     }
     pub fn unbind(&self) {
         unsafe {

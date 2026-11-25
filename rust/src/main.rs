@@ -37,9 +37,10 @@ enum Event {
     Restored(Result<bool, String>),
     LayoutDrained,
     Arrange,
+    TilePreviews,
     SidebarFrame,
     WindowMoved,
-    LayoutChanged(Result<(), String>),
+    LayoutChanged(Result<Option<String>, String>),
     Capture,
     Palette,
     Open(bool),
@@ -54,10 +55,8 @@ enum Event {
 enum Command {
     ToggleSidebar,
     ShowSettings,
+    ShowHelp,
     OpenEdit {
-        id: i64,
-    },
-    Favorite {
         id: i64,
     },
     Edit {
@@ -72,21 +71,14 @@ enum Command {
         id: i64,
         to: board::Cell,
     },
-    ResizeBoard {
+    ArrangeBoard {
         app: String,
-        rev: i64,
-        axis: board::Axis,
-        index: i64,
-        add: bool,
-        confirmed: bool,
+        cols: i64,
     },
     GridGeometry {
         app: String,
-        x: f64,
-        y: f64,
-        dx: f64,
-        dy: f64,
-        columns: i64,
+        geometry: [f64; 4],
+        viewport: board::Viewport,
     },
     Snip {
         id: i64,
@@ -333,37 +325,22 @@ impl App {
                 self.advance_sidebar()?;
             }
             Command::ShowSettings => self.dialogs.settings(&self.settings, ko(&self.settings))?,
+            Command::ShowHelp => self.dialogs.help(&self.settings, ko(&self.settings))?,
             Command::OpenEdit { id } => self.show_editor(id, false)?,
             Command::MoveSlot { app, rev, id, to } => {
                 self.layout_writer
                     .submit(LayoutWrite::Move { app, rev, id, to })?;
             }
-            Command::ResizeBoard {
-                app,
-                rev,
-                axis,
-                index,
-                add,
-                confirmed,
-            } => {
-                self.layout_writer.submit(LayoutWrite::Resize {
-                    app,
-                    rev,
-                    axis,
-                    index,
-                    add,
-                    confirmed,
-                })?;
+            Command::ArrangeBoard { app, cols } => {
+                self.layout_writer
+                    .submit(LayoutWrite::Arrange { app, cols })?;
             }
             Command::GridGeometry {
                 app,
-                x,
-                y,
-                dx,
-                dy,
-                columns,
+                geometry: [x, y, dx, dy],
+                viewport,
             } => {
-                if !app.is_empty() && !self.snipping && dx > 0. && dy > 0. {
+                if !self.snipping && dx > 0. && dy > 0. {
                     let pos = self.window.inner_position()?;
                     let s = self.window.scale_factor();
                     self.layout_writer.submit(LayoutWrite::Measure {
@@ -374,7 +351,7 @@ impl App {
                             dx * s,
                             dy * s,
                         ],
-                        columns,
+                        viewport,
                     })?;
                 }
             }
@@ -390,13 +367,6 @@ impl App {
                     let result = snip::select(korean).map_err(|e| e.to_string());
                     let _ = proxy.send_event(Event::Snipped(id, result));
                 });
-            }
-            Command::Favorite { id } => {
-                self.db.execute(
-                    "UPDATE ClipboardItems SET IsFavorite=1-IsFavorite WHERE Id=?",
-                    [id],
-                )?;
-                self.refresh()?;
             }
             Command::Edit {
                 id,
@@ -463,6 +433,7 @@ impl App {
                 self.settings = value;
                 self.dialogs.close();
                 self.ui.set_language(ko(&self.settings));
+                self.ui.set_tile_content(self.settings.tile_content);
                 self.refresh()?;
                 self.ui.focus();
             }
@@ -496,6 +467,7 @@ impl App {
                     self.ui.layout()?;
                 }
             }
+            Event::TilePreviews => self.ui.load_tile_previews(&self.db),
             Event::WindowMoved => {
                 if self.board_opened && !self.snipping && !self.ui.is_sliding() {
                     self.remember_position()?;
@@ -525,7 +497,9 @@ impl App {
             }
             Event::Ui(Input::Dialog(h, id)) => {
                 if self.dialogs.matches(h)
-                    && let Some(cmd) = self.dialogs.command(id, ko(&self.settings))?
+                    && let Some(cmd) =
+                        self.dialogs
+                            .command(id, &self.settings, ko(&self.settings))?
                 {
                     self.command(cmd)?;
                 }
@@ -539,12 +513,20 @@ impl App {
             }
             Event::LayoutChanged(result) => {
                 self.board_data()?;
-                result.map_err(anyhow::Error::msg)?;
+                if let Some(app) = result.map_err(anyhow::Error::msg)?
+                    && self.ui.active_program() == app
+                {
+                    self.ui.activate(&app);
+                    self.ui.layout()?;
+                    if self.window.is_visible() && !self.dialogs.active() {
+                        self.ui.focus();
+                    }
+                }
             }
             Event::Open(settings) => self.open_current(settings)?,
             Event::Menu => {
                 self.cancel_automatic_paste();
-                self.shell.menu(ko(&self.settings));
+                self.shell.menu(ko(&self.settings))?;
             }
             Event::TrayReset => self.shell.add_icon()?,
             Event::Palette => {
@@ -736,12 +718,9 @@ fn run() -> Result<()> {
         .build();
     let proxy = events.create_proxy();
     let layout_writer = LayoutWriter::start(&dir, proxy.clone())?;
-    let icon = image::load_from_memory(include_bytes!("../../resources/app.ico"))?.into_rgba8();
-    let (w, h) = icon.dimensions();
     let window = WindowBuilder::new()
         .with_title("ClipEverything")
         .with_window_classname(title)
-        .with_window_icon(Some(tao::window::Icon::from_rgba(icon.into_raw(), w, h)?))
         .with_visible(false)
         .with_decorations(true)
         .with_resizable(true)
@@ -751,6 +730,7 @@ fn run() -> Result<()> {
         ))
         .with_inner_size(LogicalSize::new(553., 276.))
         .build(&events)?;
+    shell::set_window_icons(&window)?;
     unsafe {
         let host = window.hwnd() as HWND;
         let style = GetWindowLongPtrW(host, GWL_STYLE);
@@ -786,6 +766,7 @@ fn run() -> Result<()> {
         app.ui.minimum_width() as f64,
         native_ui::MIN_HEIGHT as f64,
     )));
+    app.ui.set_tile_content(app.settings.tile_content);
     app.refresh()?;
     if !background {
         app.open_current(false)?;
@@ -820,7 +801,16 @@ fn run() -> Result<()> {
                 }
             }
             WindowEventLoop::WindowEvent {
-                event: WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. },
+                event: WindowEvent::ScaleFactorChanged { .. },
+                ..
+            } => {
+                if let Err(err) = shell::set_window_icons(&app.window) {
+                    app.message(&err.to_string());
+                }
+                let _ = app.proxy.send_event(Event::Arrange);
+            }
+            WindowEventLoop::WindowEvent {
+                event: WindowEvent::Resized(_),
                 ..
             } => {
                 let _ = app.proxy.send_event(Event::Arrange);

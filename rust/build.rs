@@ -34,6 +34,7 @@ fn compile_icons(out: &std::path::Path) {
         "sidebar-close",
         "search",
         "settings",
+        "help",
         "previous",
         "next",
     ] {

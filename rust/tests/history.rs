@@ -23,10 +23,12 @@ fn legacy_backup_includes_uncheckpointed_records_and_preserves_annotations() -> 
         INSERT INTO ClipboardFormats(ItemId,FormatId,FormatName,Data) VALUES(1,13,'UnicodeText',X'41000000');")?;
     let imported = store::open(&root.join("new"), Some(&root.join("old/clips.db")))?;
     let row = store::items(&imported)?.remove(0);
-    assert_eq!(
-        (row.name.as_str(), row.tags.as_str(), row.favorite),
-        ("기획", "업무", true)
-    );
+    assert_eq!((row.name.as_str(), row.tags.as_str()), ("기획", "업무"));
+    assert!(imported.query_row(
+        "SELECT IsFavorite FROM ClipboardItems WHERE Id=?",
+        [row.id],
+        |r| r.get::<_, bool>(0)
+    )?);
     assert_eq!(store::formats(&imported, row.id)?, vec![text("A")]);
     imported.execute("DELETE FROM ClipboardItems", [])?;
     assert_eq!(
@@ -72,7 +74,7 @@ fn rollback_and_retention_protect_history() -> anyhow::Result<()> {
     store::save(&mut db, &[text("새 클립")], &src)?;
     let rows = store::items(&db)?;
     assert_eq!(rows.len(), 1001);
-    assert!(rows.iter().any(|r| r.id == 1 && r.favorite));
+    assert!(rows.iter().any(|r| r.id == 1));
     drop(db);
     fs::remove_dir_all(root)?;
     Ok(())

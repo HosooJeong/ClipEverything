@@ -217,6 +217,15 @@ pub fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TileContent {
+    #[default]
+    Icon,
+    Preview,
+    None,
+}
+
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Settings {
@@ -229,6 +238,7 @@ pub struct Settings {
     pub copy_vk: u32,
     pub paste_mods: u32,
     pub paste_vk: u32,
+    pub tile_content: TileContent,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -242,6 +252,7 @@ impl Default for Settings {
             copy_vk: 67,
             paste_mods: 3,
             paste_vk: 86,
+            tile_content: TileContent::default(),
         }
     }
 }

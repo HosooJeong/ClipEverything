@@ -30,7 +30,6 @@ pub struct Item {
     pub title: String,
     pub kind: i32,
     pub tags: String,
-    pub favorite: bool,
     pub copied: String,
     pub preview: String,
     pub shot: i64,
@@ -95,7 +94,7 @@ pub fn open(dir: &Path, legacy: Option<&Path>) -> Result<Connection> {
 }
 
 pub fn items(db: &Connection) -> Result<Vec<Item>> {
-    let mut q=db.prepare("SELECT Id,coalesce(Name,''),SourceApp,SourceWindow,ContentType,coalesce(Tags,''),coalesce(IsFavorite,0),LastCopiedAt,coalesce(PreviewText,''),coalesce((SELECT Revision FROM ButtonPreviews WHERE ItemId=ClipboardItems.Id),0),(SELECT Id FROM SourcePrograms WHERE App=SourceApp AND Icon IS NOT NULL),coalesce(length(Thumbnail),0)>0,coalesce((SELECT Label FROM SourcePrograms WHERE App=SourceApp),SourceApp) FROM ClipboardItems ORDER BY LastCopiedAt DESC, Id DESC")?;
+    let mut q=db.prepare("SELECT Id,coalesce(Name,''),SourceApp,SourceWindow,ContentType,coalesce(Tags,''),LastCopiedAt,coalesce(PreviewText,''),coalesce((SELECT Revision FROM ButtonPreviews WHERE ItemId=ClipboardItems.Id),0),(SELECT Id FROM SourcePrograms WHERE App=SourceApp AND Icon IS NOT NULL),coalesce(length(Thumbnail),0)>0,coalesce((SELECT Label FROM SourcePrograms WHERE App=SourceApp),SourceApp) FROM ClipboardItems ORDER BY LastCopiedAt DESC, Id DESC")?;
     Ok(q.query_map([], |r| {
         Ok(Item {
             id: r.get(0)?,
@@ -104,13 +103,12 @@ pub fn items(db: &Connection) -> Result<Vec<Item>> {
             title: r.get(3)?,
             kind: r.get(4)?,
             tags: r.get(5)?,
-            favorite: r.get(6)?,
-            copied: r.get(7)?,
-            preview: r.get(8)?,
-            shot: r.get(9)?,
-            program_icon: r.get(10)?,
-            program_name: r.get(12)?,
-            has_thumbnail: r.get(11)?,
+            copied: r.get(6)?,
+            preview: r.get(7)?,
+            shot: r.get(8)?,
+            program_icon: r.get(9)?,
+            program_name: r.get(11)?,
+            has_thumbnail: r.get(10)?,
         })
     })?
     .collect::<Result<_, _>>()?)
@@ -128,12 +126,16 @@ pub fn formats(db: &Connection, id: i64) -> Result<Vec<Format>> {
     })?
     .collect::<Result<_, _>>()?)
 }
-pub fn detail(db: &Connection, id: i64) -> Result<Detail> {
-    let img: Option<Vec<u8>> = db.query_row(
+pub fn preview_image(db: &Connection, id: i64) -> Result<Option<Vec<u8>>> {
+    Ok(db.query_row(
         "SELECT coalesce((SELECT Png FROM ButtonPreviews WHERE ItemId=Id),Thumbnail) FROM ClipboardItems WHERE Id=?",
         [id],
         |r| r.get(0),
-    )?;
+    )?)
+}
+
+pub fn detail(db: &Connection, id: i64) -> Result<Detail> {
+    let img = preview_image(db, id)?;
     let mut q = db.prepare("SELECT FormatName FROM ClipboardFormats WHERE ItemId=? ORDER BY Id")?;
     Ok(Detail {
         image: img
@@ -309,6 +311,7 @@ pub fn save_near(
                 params![id, f.id, f.name, f.data],
             )?;
         }
+        // Keep the pre-existing retention exemption for older saved libraries.
         tx.execute("DELETE FROM ClipboardItems WHERE Id IN (SELECT Id FROM ClipboardItems WHERE IsFavorite=0 ORDER BY LastCopiedAt DESC,Id DESC LIMIT -1 OFFSET 1000)",[])?;
         id
     };

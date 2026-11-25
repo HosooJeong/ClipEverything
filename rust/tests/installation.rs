@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clip_everything::preferences::{self, InstallChoices, Settings, Shortcut};
+use clip_everything::preferences::{self, InstallChoices, Settings, Shortcut, TileContent};
 use rusqlite::Connection;
 #[test]
 fn installer_accepts_the_same_shortcuts_as_the_app() -> Result<()> {
@@ -23,6 +23,8 @@ fn setup_is_applied_once_and_an_upgrade_preserves_other_preferences() -> Result<
     db.execute_batch("CREATE TABLE Preferences(Id INTEGER PRIMARY KEY, Json TEXT NOT NULL)")?;
     let mut old: Settings = serde_json::from_str(r#"{"notify":false,"language":"en"}"#)?;
     assert!(old.close_to_tray);
+    assert_eq!(old.tile_content, TileContent::Icon);
+    old.tile_content = TileContent::Preview;
     let mut options = InstallChoices {
         stamp: "first".into(),
         capture: Shortcut::parse("Shift+Alt+Q")?,
@@ -43,6 +45,10 @@ fn setup_is_applied_once_and_an_upgrade_preserves_other_preferences() -> Result<
     options.stamp = "upgrade".into();
     preferences::apply_once(&db, &mut old, &options)?;
     assert!(!old.close_to_tray);
+    assert_eq!(
+        preferences::existing(&db)?.unwrap().tile_content,
+        TileContent::Preview
+    );
     assert_eq!(preferences::applied(&db)?.as_deref(), Some("upgrade"));
     options.stamp = "bad".into();
     options.board = options.capture;

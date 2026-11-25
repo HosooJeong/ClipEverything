@@ -1,6 +1,7 @@
 use super::{
     Input,
-    paint::{self, Bitmap, Face},
+    grid::{GRID_TOP, Shape},
+    paint::{self, Bitmap, Face, PreviewKey},
 };
 use crate::Event;
 use clip_everything::{board::Cell as Slot, clipboard::wide};
@@ -25,9 +26,8 @@ pub const SMALLER: i32 = 32;
 pub const TOGGLE_SIDEBAR: i32 = 33;
 pub const LARGER: i32 = 34;
 pub const EMPTY_MESSAGE: i32 = 40;
+pub const HELP: i32 = 41;
 pub const CATEGORY_SCROLL: i32 = 39;
-pub const ADD_COL: i32 = 35;
-pub const ADD_ROW: i32 = 36;
 pub const PREVIOUS: i32 = 37;
 pub const NEXT: i32 = 38;
 pub const TAB: i32 = 100;
@@ -61,9 +61,11 @@ pub struct Bridge {
     pub faces: RefCell<HashMap<usize, Face>>,
     pub bindings: RefCell<HashMap<usize, Binding>>,
     pub icons: RefCell<HashMap<i64, Rc<Bitmap>>>,
+    pub previews: RefCell<HashMap<PreviewKey, Option<Bitmap>>>,
     pub font: Cell<HFONT>,
     pub dpi: Cell<i32>,
     pub rail_width: Cell<i32>,
+    pub grid_shape: Cell<Option<Shape>>,
     pub anchor_right: Cell<bool>,
     pub search_bounds: Cell<RECT>,
     pub hover: Cell<usize>,
@@ -82,9 +84,11 @@ impl Bridge {
             faces: Default::default(),
             bindings: Default::default(),
             icons: Default::default(),
+            previews: Default::default(),
             font: Cell::new(null_mut()),
             dpi: Cell::new(96),
             rail_width: Cell::new(0),
+            grid_shape: Cell::new(None),
             anchor_right: Cell::new(false),
             search_bounds: Cell::new(RECT::default()),
             hover: Cell::new(0),
@@ -336,7 +340,7 @@ pub(super) unsafe extern "system" fn child_proc(
                     };
                 }
                 if let Some(r) = b.bindings.borrow().get(&(h as usize)) {
-                    b.event(Input::Context(r.clone(), p.x, p.y));
+                    b.event(Input::Context(Some(r.clone()), p.x, p.y));
                 }
                 return 0;
             }
@@ -377,7 +381,7 @@ pub(super) unsafe extern "system" fn child_proc(
             }
             WM_MOUSEHOVER
                 if (TAB..TILE).contains(&id)
-                    || matches!(id, SMALLER | LARGER | ADD_ROW | ADD_COL | TOGGLE_SIDEBAR) =>
+                    || matches!(id, SMALLER | LARGER | TOGGLE_SIDEBAR | HELP) =>
             {
                 b.event(Input::Hover(h as isize, None));
                 return 0;
@@ -480,6 +484,32 @@ pub unsafe extern "system" fn parent_proc(
     unsafe {
         let b = &*(data as *const Bridge);
         match msg {
+            WM_SIZING if l != 0 => {
+                if let Some(shape) = b.grid_shape.get() {
+                    let mut outer = RECT::default();
+                    let mut client = RECT::default();
+                    if GetWindowRect(h, &mut outer) != 0 && GetClientRect(h, &mut client) != 0 {
+                        let nonclient = (
+                            (outer.right - outer.left) - client.right,
+                            (outer.bottom - outer.top) - client.bottom,
+                        );
+                        shape.snap_frame(&mut *(l as *mut RECT), w as u32, nonclient);
+                        return 1;
+                    }
+                }
+            }
+            WM_CONTEXTMENU if w == h as usize && l != -1 => {
+                let x = l as i16 as i32;
+                let y = (l >> 16) as i16 as i32;
+                let mut p = POINT { x, y };
+                ScreenToClient(h, &mut p);
+                let grid_top = (GRID_TOP * b.dpi.get() + 48) / 96;
+                if p.x >= b.search_bounds.get().left && p.y >= grid_top {
+                    b.cancel();
+                    b.event(Input::Context(None, x, y));
+                    return 0;
+                }
+            }
             WM_NCCALCSIZE if w != 0 && l != 0 && b.anchor_right.get() => {
                 let params = l as *mut NCCALCSIZE_PARAMS;
                 let old = (*params).rgrc[2];
@@ -568,11 +598,16 @@ pub unsafe extern "system" fn parent_proc(
                 let key = d.hwndItem as usize;
                 if let Some(face) = b.faces.borrow().get(&key) {
                     let icons = b.icons.borrow();
+                    let previews = b.previews.borrow();
+                    let image = face
+                        .preview
+                        .and_then(|key| previews.get(&key)?.as_ref())
+                        .or_else(|| face.icon.and_then(|id| icons.get(&id)).map(Rc::as_ref));
                     paint::draw(
                         d.hDC,
                         d.rcItem,
                         face,
-                        face.icon.and_then(|id| icons.get(&id)).map(Rc::as_ref),
+                        image,
                         b.font.get(),
                         b.dpi.get(),
                         paint::ButtonState {

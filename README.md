@@ -27,9 +27,10 @@ English · [한국어](README.ko.md)
 ## Once your board fills up
 
 - **Find a clip.** Choose the source program and press **Ctrl+F** to search its titles or tags. Hover over a tile to see its preview.
-- **Keep your favorites within reach.** Drag tiles into an order you remember. Use the **+** at the right edge to add a column or the **+** at the bottom to add a row.
+- **Keep frequently used clips within reach.** Drag tiles into an order you remember. Drag a window edge to resize in whole rows and columns. Clips that move offscreen are available on later pages. Right-click and choose **Auto arrange** to pack the current program’s clips into the visible column count.
 - **Copy for manual pasting.** Open the board from the ClipEverything tray menu, click a tile and wait for the check mark, then press **Ctrl+V** in your destination.
 - **Change the shortcuts.** Open **Settings** at the bottom of the sidebar. The steps above use the defaults.
+- **Choose what tiles show.** In Settings, choose a program icon, a preview, or no visual. Clip names are always visible. The book icon below Settings opens the user guide with your current shortcuts.
 
 Clips are stored locally. The default profile is `%APPDATA%\ClipEverythingRust`, and portable copies use `portable-data-rust` beside the executable. Rich formatting depends on what the receiving program supports.
 
