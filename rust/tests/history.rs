@@ -1,4 +1,7 @@
-use clip_everything::store::{self, Format, Source};
+use clip_everything::{
+    board,
+    store::{self, ClipEdit, Format, PreviewEdit, Source},
+};
 use std::{fs, path::PathBuf};
 fn dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("clip-rust-test-{}-{name}", std::process::id()))
@@ -75,6 +78,59 @@ fn rollback_and_retention_protect_history() -> anyhow::Result<()> {
     let rows = store::items(&db)?;
     assert_eq!(rows.len(), 1001);
     assert!(rows.iter().any(|r| r.id == 1));
+    drop(db);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn registration_commits_metadata_and_board_slot_together() -> anyhow::Result<()> {
+    let root = dir("registration");
+    let mut db = store::open(&root, None)?;
+    let source = Source {
+        app: "Editor".into(),
+        ..Source::default()
+    };
+    let formats = [text("반복 문구")];
+    assert_eq!(store::matching_clip(&db, &formats)?, None);
+    db.execute_batch("CREATE TRIGGER reject_preview BEFORE INSERT ON ButtonPreviews BEGIN SELECT RAISE(ABORT,'test'); END;")?;
+    let edit = || ClipEdit {
+        name: " 업무 회신 ",
+        tags: " 결재 ",
+        preview: PreviewEdit::Replace(&[1, 2, 3]),
+    };
+    assert!(store::register(&mut db, &formats, &source, None, edit()).is_err());
+    assert!(store::items(&db)?.is_empty());
+    assert!(
+        !db.query_row("SELECT EXISTS(SELECT 1 FROM ButtonSlots)", [], |r| r
+            .get::<_, bool>(0))?
+    );
+    db.execute_batch("DROP TRIGGER reject_preview;")?;
+
+    let id = store::register(&mut db, &formats, &source, None, edit())?;
+    let item = store::items(&db)?.remove(0);
+    assert_eq!(
+        (item.id, item.name.as_str(), item.tags.as_str()),
+        (id, "업무 회신", "결재")
+    );
+    assert_eq!(store::formats(&db, id)?, formats);
+    assert_eq!(store::preview_image(&db, id)?, Some(vec![1, 2, 3]));
+    let first = board::read(&db, &source.app)?.slots[0].cell;
+    assert_eq!(store::matching_clip(&db, &formats)?, Some(id));
+    let saved = store::register(
+        &mut db,
+        &formats,
+        &source,
+        Some((200, 400)),
+        ClipEdit {
+            name: "다른 이름",
+            tags: "",
+            preview: PreviewEdit::Keep,
+        },
+    )?;
+    assert_eq!(saved, id);
+    assert_eq!(board::read(&db, &source.app)?.slots[0].cell, first);
+    assert_eq!(store::preview_image(&db, id)?, Some(vec![1, 2, 3]));
     drop(db);
     fs::remove_dir_all(root)?;
     Ok(())

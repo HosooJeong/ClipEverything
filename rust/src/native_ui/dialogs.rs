@@ -2,7 +2,7 @@ use super::{
     Input,
     paint::{self, Bitmap, Contrast, Font, Symbol},
 };
-use crate::{Command, Event, Settings};
+use crate::{Command, Event, PreviewChange, Settings};
 use anyhow::{Result, ensure};
 use clip_everything::{
     clipboard::wide,
@@ -317,12 +317,17 @@ fn draw_dialog_button(draw: &NMCUSTOMDRAW, id: i32, primary: bool) {
         SelectObject(dc, old);
     }
 }
+enum Editor {
+    Registration,
+    Existing(i64),
+}
+
 pub struct Dialogs {
     hwnd: HWND,
     owner: HWND,
     bridge: Box<Bridge>,
-    pub editing: Option<i64>,
-    shot: &'static str,
+    editing: Option<Editor>,
+    shot: PreviewChange,
 }
 impl Dialogs {
     pub fn new(owner: HWND, proxy: EventLoopProxy<Event>) -> Self {
@@ -336,7 +341,7 @@ impl Dialogs {
                 help_page: Cell::new(None),
             }),
             editing: None,
-            shot: "keep",
+            shot: PreviewChange::Keep,
         }
     }
     pub fn active(&self) -> bool {
@@ -377,7 +382,7 @@ impl Dialogs {
                 self.hwnd = null_mut();
                 self.editing = None;
                 self.bridge.help_page.set(None);
-                self.shot = "keep";
+                self.shot = PreviewChange::Keep;
                 *self.bridge.pic.borrow_mut() = None;
             }
         }
@@ -410,8 +415,8 @@ impl Dialogs {
             (112, "버튼판 열기", "Open board"),
             (
                 114,
-                "클립 등록 직후 이름과 미리보기 편집",
-                "Edit name and preview after capture",
+                "등록할 때 이름과 미리보기 편집",
+                "Review name and preview before saving",
             ),
             (115, "클립 저장 알림 표시", "Show capture notifications"),
             (116, "로그인 시 실행", "Start at sign-in"),
@@ -539,14 +544,18 @@ impl Dialogs {
     }
     pub fn editor(
         &mut self,
-        i: &Item,
+        item: Option<&Item>,
         preview: Option<&[u8]>,
         ko: bool,
         registration: bool,
     ) -> Result<()> {
         self.bridge.korean.set(ko);
         self.create(202)?;
-        self.editing = Some(i.id);
+        self.editing = if registration {
+            Some(Editor::Registration)
+        } else {
+            item.map(|item| Editor::Existing(item.id))
+        };
         set(
             self.hwnd,
             match (ko, registration) {
@@ -567,8 +576,10 @@ impl Dialogs {
         ] {
             set(self.ctrl(id), if ko { k } else { e });
         }
-        set(self.ctrl(131), &i.name);
-        set(self.ctrl(133), &i.tags);
+        if let Some(item) = item {
+            set(self.ctrl(131), &item.name);
+            set(self.ctrl(133), &item.tags);
+        }
         self.picture(preview);
         self.visibility(true);
         unsafe {
@@ -591,12 +602,19 @@ impl Dialogs {
         }
     }
     pub fn captured(&mut self, bytes: &[u8]) {
-        self.shot = "replace";
+        self.shot = PreviewChange::Replace;
         self.picture(Some(bytes));
+    }
+    pub fn set_saving(&self, saving: bool) {
+        unsafe {
+            for id in [1, 2, 131, 133, 134, 135] {
+                EnableWindow(self.ctrl(id), i32::from(!saving));
+            }
+        }
     }
     pub fn command(&mut self, id: i32, settings: &Settings, ko: bool) -> Result<Option<Command>> {
         match id {
-            2 => self.close(),
+            2 => return Ok(Some(Command::CancelDialog)),
             HELP_USAGE..=HELP_NOTICES if self.bridge.help_page.get().is_some() => {
                 self.help_page(id, settings, ko);
             }
@@ -615,21 +633,27 @@ impl Dialogs {
             }
             121 => return Ok(Some(Command::Quit)),
             134 => {
-                if let Some(id) = self.editing {
-                    return Ok(Some(Command::Snip { id }));
+                if self.editing.is_some() {
+                    return Ok(Some(Command::Snip));
                 }
             }
             135 => {
-                self.shot = "clear";
+                self.shot = PreviewChange::Clear;
                 self.picture(None);
             }
             1 => {
-                if let Some(id) = self.editing {
-                    return Ok(Some(Command::Edit {
-                        id,
-                        name: text(self.ctrl(131)),
-                        tags: text(self.ctrl(133)),
-                        shot: self.shot.to_owned(),
+                if let Some(editor) = &self.editing {
+                    let name = text(self.ctrl(131));
+                    let tags = text(self.ctrl(133));
+                    let shot = self.shot;
+                    return Ok(Some(match *editor {
+                        Editor::Registration => Command::Register { name, tags, shot },
+                        Editor::Existing(id) => Command::Edit {
+                            id,
+                            name,
+                            tags,
+                            shot,
+                        },
                     }));
                 }
                 let capture = Shortcut::parse(&text(self.ctrl(111)))?;

@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 use clip_everything::{board, clipboard, preferences, store};
 mod native_ui;
-use native_ui::{Dialogs, Input, NativeUi};
+use native_ui::{Dialogs, Input, NativeUi, WindowSize};
 mod layout_writer;
 mod shell;
 use layout_writer::{LayoutWrite, LayoutWriter};
@@ -9,7 +9,7 @@ mod snip;
 mod source_icon;
 
 use anyhow::{Context, Result, bail, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 use shell::{Settings, Shell};
 use std::{
@@ -23,7 +23,7 @@ use std::{
 };
 use store::Source;
 use tao::{
-    dpi::LogicalSize,
+    dpi::{LogicalSize, PhysicalPosition},
     event::{Event as WindowEventLoop, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     platform::windows::{EventLoopBuilderExtWindows, WindowBuilderExtWindows, WindowExtWindows},
@@ -48,14 +48,34 @@ enum Event {
     TrayReset,
     Quit,
     Ui(Input),
-    Saved(Result<i64, String>, Source),
-    Snipped(i64, Result<Option<Vec<u8>>, String>),
+    Captured(Result<(Registration, Option<i64>), String>),
+    Saved(Result<i64, String>, Source, bool),
+    Snipped(Result<Option<Vec<u8>>, String>),
+}
+
+#[derive(Clone, Copy)]
+enum PreviewChange {
+    Keep,
+    Replace,
+    Clear,
+}
+impl PreviewChange {
+    fn edit(self, draft: Option<&[u8]>) -> Result<store::PreviewEdit<'_>> {
+        Ok(match self {
+            Self::Keep => store::PreviewEdit::Keep,
+            Self::Replace => {
+                store::PreviewEdit::Replace(draft.context("미리보기를 다시 캡처해 주십시오.")?)
+            }
+            Self::Clear => store::PreviewEdit::Clear,
+        })
+    }
 }
 
 enum Command {
     ToggleSidebar,
     ShowSettings,
     ShowHelp,
+    CancelDialog,
     OpenEdit {
         id: i64,
     },
@@ -63,7 +83,12 @@ enum Command {
         id: i64,
         name: String,
         tags: String,
-        shot: String,
+        shot: PreviewChange,
+    },
+    Register {
+        name: String,
+        tags: String,
+        shot: PreviewChange,
     },
     MoveSlot {
         app: String,
@@ -80,9 +105,7 @@ enum Command {
         geometry: [f64; 4],
         viewport: board::Viewport,
     },
-    Snip {
-        id: i64,
-    },
+    Snip,
     Delete {
         id: i64,
     },
@@ -103,6 +126,22 @@ struct PendingRestore {
     automatic: bool,
 }
 
+struct Registration {
+    formats: Vec<store::Format>,
+    source: Source,
+    pointer: Option<(i32, i32)>,
+}
+impl Registration {
+    fn capture(owner: isize, source: Source, pointer: Option<(i32, i32)>) -> Result<Self> {
+        let formats = clipboard::copy_selection(owner, &source)?;
+        Ok(Self {
+            formats,
+            source,
+            pointer,
+        })
+    }
+}
+
 struct App {
     restoring: Option<PendingRestore>,
     dialogs: Dialogs,
@@ -116,9 +155,11 @@ struct App {
     target: Option<Source>,
     busy: bool,
     board_opened: bool,
+    last_window: Option<(PhysicalPosition<i32>, WindowSize)>,
     initial_source: String,
     snipping: bool,
-    draft: Option<(i64, Vec<u8>)>,
+    registration: Option<Arc<Registration>>,
+    draft: Option<Arc<[u8]>>,
     proxy: EventLoopProxy<Event>,
 }
 fn ko(s: &Settings) -> bool {
@@ -219,7 +260,7 @@ impl App {
         }
         Ok(())
     }
-    fn position_board(&self, origin: Option<tao::dpi::PhysicalPosition<i32>>) {
+    fn position_board(&self, origin: Option<PhysicalPosition<i32>>, size: Option<WindowSize>) {
         use windows_sys::Win32::Graphics::Gdi::*;
         unsafe {
             let mut cursor = POINT::default();
@@ -237,30 +278,44 @@ impl App {
                 ..Default::default()
             };
             if GetMonitorInfoW(monitor, &mut info) != 0 {
-                let a = info.rcWork;
-                let w = self.window.outer_size();
-                let max_x = (a.right - w.width as i32).max(a.left);
-                let max_y = (a.bottom - w.height as i32).max(a.top);
-                let p = origin
+                let origin = origin
                     .filter(|_| !saved.is_null())
-                    .unwrap_or(tao::dpi::PhysicalPosition::new(max_x - 12, a.top + 48));
-                let pos = tao::dpi::PhysicalPosition::new(
-                    p.x.clamp(a.left, max_x),
-                    p.y.clamp(a.top, max_y),
-                );
-                if self.window.outer_position().ok() != Some(pos) {
-                    self.window.set_outer_position(pos);
+                    .map(|p| POINT { x: p.x, y: p.y });
+                let hwnd = self.window.hwnd() as HWND;
+                if MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) != monitor {
+                    let work = info.rcWork;
+                    SetWindowPos(
+                        hwnd,
+                        std::ptr::null_mut(),
+                        work.left + 1,
+                        work.top + 1,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
                 }
+                self.ui.fit_window(info.rcWork, origin, size);
             }
         }
     }
-    fn remember_position(&self) -> Result<()> {
-        if !self.window.is_maximized()
+    fn window_geometry(&self) -> Option<(PhysicalPosition<i32>, WindowSize)> {
+        Some((self.window.outer_position().ok()?, self.ui.window_size()?))
+    }
+    fn remember_window(&mut self) -> Result<()> {
+        if self.board_opened
+            && self.window.is_visible()
+            && !self.window.is_maximized()
             && !self.window.is_minimized()
-            && let Ok(p) = self.window.outer_position()
+            && let Some((p, size)) = self.window_geometry()
+            && self.last_window != Some((p, size))
         {
-            self.layout_writer
-                .submit(LayoutWrite::Position { x: p.x, y: p.y })?;
+            let changed_size = self.last_window.is_none_or(|(_, old)| old != size);
+            self.layout_writer.submit(LayoutWrite::Position {
+                x: p.x,
+                y: p.y,
+                size: changed_size.then_some(size),
+            })?;
+            self.last_window = Some((p, size));
         }
         Ok(())
     }
@@ -283,10 +338,25 @@ impl App {
             let pos = self
                 .db
                 .query_row("SELECT X,Y FROM BoardWindow WHERE Id=1", [], |r| {
-                    Ok(tao::dpi::PhysicalPosition::new(r.get(0)?, r.get(1)?))
+                    Ok(PhysicalPosition::new(r.get(0)?, r.get(1)?))
                 })
                 .optional()?;
-            self.position_board(pos);
+            let size = self
+                .db
+                .query_row(
+                    "SELECT Width,Height,Dpi FROM BoardWindowSize WHERE Id=1",
+                    [],
+                    |r| {
+                        Ok(WindowSize {
+                            width: r.get(0)?,
+                            height: r.get(1)?,
+                            dpi: r.get(2)?,
+                        })
+                    },
+                )
+                .optional()?;
+            self.position_board(pos, size);
+            self.last_window = self.window_geometry();
         }
         self.board_opened = true;
         self.ui.activate(app);
@@ -300,18 +370,69 @@ impl App {
     fn message(&mut self, msg: &str) {
         self.shell.notify(msg);
     }
-    fn show_editor(&mut self, id: i64, registration: bool) -> Result<()> {
-        let bytes: Option<Vec<u8>> = self
-            .db
-            .query_row("SELECT Png FROM ButtonPreviews WHERE ItemId=?", [id], |r| {
-                r.get(0)
-            })
-            .optional()?;
+    fn open_editor(&mut self, id: Option<i64>, registration: bool) -> Result<()> {
+        let bytes: Option<Vec<u8>> = if let Some(id) = id {
+            self.db
+                .query_row("SELECT Png FROM ButtonPreviews WHERE ItemId=?", [id], |r| {
+                    r.get(0)
+                })
+                .optional()?
+        } else {
+            None
+        };
         self.draft = None;
-        if let Some(item) = self.ui.item(id) {
+        let item = id.and_then(|id| self.ui.item(id));
+        if registration || item.is_some() {
             self.dialogs
                 .editor(item, bytes.as_deref(), ko(&self.settings), registration)?;
         }
+        Ok(())
+    }
+    fn finish_editor(&mut self) {
+        self.dialogs.close();
+        self.registration = None;
+        self.draft = None;
+        self.ui.focus();
+    }
+    fn start_registration_save(
+        &mut self,
+        name: String,
+        tags: String,
+        shot: PreviewChange,
+    ) -> Result<()> {
+        let capture = Arc::clone(
+            self.registration
+                .as_ref()
+                .context("등록할 클립이 없습니다.")?,
+        );
+        let preview = self.draft.clone();
+        let path = self.dir.join("clips.db");
+        let proxy = self.proxy.clone();
+        thread::Builder::new()
+            .name("clip-registration".into())
+            .spawn(move || {
+                let result = (|| {
+                    let mut db = open_capture_db(&path)?;
+                    store::register(
+                        &mut db,
+                        &capture.formats,
+                        &capture.source,
+                        capture.pointer,
+                        store::ClipEdit {
+                            name: &name,
+                            tags: &tags,
+                            preview: shot.edit(preview.as_deref())?,
+                        },
+                    )
+                })();
+                let _ = proxy.send_event(Event::Saved(
+                    result.map_err(|e| format!("{e:#}")),
+                    capture.source.clone(),
+                    true,
+                ));
+            })?;
+        self.busy = true;
+        self.dialogs.set_saving(true);
         Ok(())
     }
     fn command(&mut self, cmd: Command) -> Result<()> {
@@ -326,7 +447,8 @@ impl App {
             }
             Command::ShowSettings => self.dialogs.settings(&self.settings, ko(&self.settings))?,
             Command::ShowHelp => self.dialogs.help(&self.settings, ko(&self.settings))?,
-            Command::OpenEdit { id } => self.show_editor(id, false)?,
+            Command::CancelDialog => self.finish_editor(),
+            Command::OpenEdit { id } => self.open_editor(Some(id), false)?,
             Command::MoveSlot { app, rev, id, to } => {
                 self.layout_writer
                     .submit(LayoutWrite::Move { app, rev, id, to })?;
@@ -355,7 +477,7 @@ impl App {
                     })?;
                 }
             }
-            Command::Snip { id } => {
+            Command::Snip => {
                 if self.snipping {
                     return Ok(());
                 }
@@ -365,7 +487,7 @@ impl App {
                 let korean = ko(&self.settings);
                 thread::spawn(move || {
                     let result = snip::select(korean).map_err(|e| e.to_string());
-                    let _ = proxy.send_event(Event::Snipped(id, result));
+                    let _ = proxy.send_event(Event::Snipped(result));
                 });
             }
             Command::Edit {
@@ -374,29 +496,21 @@ impl App {
                 tags,
                 shot,
             } => {
-                ensure!(
-                    name.len() <= 4096 && tags.len() <= 4096,
-                    "Name or tags too long"
-                );
-                let tx = self.db.transaction()?;
-                tx.execute(
-                    "UPDATE ClipboardItems SET Name=?,Tags=? WHERE Id=?",
-                    params![name.trim(), tags.trim(), id],
+                store::edit(
+                    &mut self.db,
+                    id,
+                    store::ClipEdit {
+                        name: &name,
+                        tags: &tags,
+                        preview: shot.edit(self.draft.as_deref())?,
+                    },
                 )?;
-                if shot == "replace" {
-                    let (draft_id, bytes) =
-                        self.draft.as_ref().context("Capture the preview again")?;
-                    ensure!(*draft_id == id, "Preview belongs to a different item");
-                    tx.execute("INSERT INTO ButtonPreviews(ItemId,Png) VALUES(?,?) ON CONFLICT(ItemId) DO UPDATE SET Png=excluded.Png, Revision=Revision+1",params![id,bytes])?;
-                } else if shot == "clear" {
-                    tx.execute("DELETE FROM ButtonPreviews WHERE ItemId=?", [id])?;
-                }
-                tx.commit()?;
-                self.draft = None;
+                self.finish_editor();
                 self.refresh()?;
                 self.board_data()?;
-                self.dialogs.close();
-                self.ui.focus();
+            }
+            Command::Register { name, tags, shot } => {
+                self.start_registration_save(name, tags, shot)?
             }
             Command::Delete { id } => {
                 self.db
@@ -450,6 +564,7 @@ impl App {
                 self.ui.minimum_width() as f64,
                 native_ui::MIN_HEIGHT as f64,
             )));
+            self.remember_window()?;
         }
         Ok(())
     }
@@ -465,12 +580,13 @@ impl App {
             Event::Arrange => {
                 if !self.ui.is_sliding() {
                     self.ui.layout()?;
+                    self.remember_window()?;
                 }
             }
             Event::TilePreviews => self.ui.load_tile_previews(&self.db),
             Event::WindowMoved => {
                 if self.board_opened && !self.snipping && !self.ui.is_sliding() {
-                    self.remember_position()?;
+                    self.remember_window()?;
                     self.ui.moved()?;
                 }
             }
@@ -487,16 +603,17 @@ impl App {
                     }
                 }
             }
-            Event::Snipped(id, result) => {
+            Event::Snipped(result) => {
                 self.snipping = false;
                 self.show_launcher()?;
                 if let Some(bytes) = result.map_err(anyhow::Error::msg)? {
                     self.dialogs.captured(&bytes);
-                    self.draft = Some((id, bytes));
+                    self.draft = Some(bytes.into());
                 }
             }
             Event::Ui(Input::Dialog(h, id)) => {
-                if self.dialogs.matches(h)
+                if !(self.snipping || self.busy && self.registration.is_some())
+                    && self.dialogs.matches(h)
                     && let Some(cmd) =
                         self.dialogs
                             .command(id, &self.settings, ko(&self.settings))?
@@ -556,30 +673,55 @@ impl App {
                 let pointer =
                     (unsafe { GetCursorPos(&mut cursor) } != 0).then_some((cursor.x, cursor.y));
                 let hwnd = self.window.hwnd();
-                let dir = self.dir.clone();
+                let path = self.dir.join("clips.db");
                 let proxy = self.proxy.clone();
+                let ask = self.settings.open_after;
                 thread::spawn(move || {
-                    let result = (|| {
-                        let formats = clipboard::copy_selection(hwnd, &src)?;
-                        let mut db = Connection::open(dir.join("clips.db"))?;
-                        db.execute_batch("PRAGMA foreign_keys=ON;")?;
-                        store::save_near(&mut db, &formats, &src, pointer)
-                    })();
-                    let _ =
-                        proxy.send_event(Event::Saved(result.map_err(|e| format!("{e:#}")), src));
+                    let capture = Registration::capture(hwnd, src.clone(), pointer);
+                    let event = if ask {
+                        let result = capture.and_then(|draft| {
+                            let db = Connection::open_with_flags(
+                                path,
+                                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                            )?;
+                            let existing = store::matching_clip(&db, &draft.formats)?;
+                            Ok((draft, existing))
+                        });
+                        Event::Captured(result.map_err(|e| format!("{e:#}")))
+                    } else {
+                        let result = capture.and_then(|draft| {
+                            let mut db = open_capture_db(&path)?;
+                            store::save_near(&mut db, &draft.formats, &draft.source, draft.pointer)
+                        });
+                        Event::Saved(result.map_err(|e| format!("{e:#}")), src, false)
+                    };
+                    let _ = proxy.send_event(event);
                 });
             }
-            Event::Saved(result, src) => {
+            Event::Captured(result) => {
                 self.busy = false;
+                let (draft, existing) = result.map_err(anyhow::Error::msg)?;
+                self.target = Some(draft.source.clone());
+                self.board(&draft.source.app)?;
+                self.open_editor(existing, true)?;
+                self.registration = Some(Arc::new(draft));
+            }
+            Event::Saved(result, src, registered) => {
+                self.busy = false;
+                if registered {
+                    self.dialogs.set_saving(false);
+                }
                 let id = result.map_err(anyhow::Error::msg)?;
+                if registered {
+                    self.finish_editor();
+                }
                 source_icon::remember(&self.db, &src.app, &src.exe)?;
                 self.refresh()?;
-                if self.settings.open_after {
+                if registered {
                     let app = src.app.clone();
                     self.target = Some(src);
                     self.board(&app)?;
                     self.ui.focus_item(id)?;
-                    self.show_editor(id, true)?;
                 } else {
                     self.board_data()?;
                 }
@@ -595,6 +737,12 @@ impl App {
         }
         Ok(())
     }
+}
+
+fn open_capture_db(path: &Path) -> Result<Connection> {
+    let db = Connection::open(path)?;
+    db.execute_batch("PRAGMA foreign_keys=ON;")?;
+    Ok(db)
 }
 
 fn load_settings(db: &Connection, legacy: Option<&Path>) -> Result<Settings> {
@@ -751,8 +899,10 @@ fn run() -> Result<()> {
         layout_writer,
         initial_source,
         snipping: false,
+        registration: None,
         draft: None,
         board_opened: false,
+        last_window: None,
         window,
         shell,
         db,
@@ -783,10 +933,20 @@ fn run() -> Result<()> {
             WindowEventLoop::UserEvent(Event::Restored(_)) if quitting_at.is_some() => {
                 app.restoring = None
             }
+            WindowEventLoop::UserEvent(Event::Saved(..) | Event::Captured(_))
+                if quitting_at.is_some() =>
+            {
+                app.busy = false;
+            }
             _ if quitting_at.is_some() => {}
             WindowEventLoop::UserEvent(Event::Quit) => {
                 if let Some(job) = &app.restoring {
                     job.cancelled.store(true, Ordering::Release);
+                }
+                if !app.ui.is_sliding()
+                    && let Err(error) = app.remember_window()
+                {
+                    app.message(&error.to_string());
                 }
                 quitting_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
                 layout_drained = !app.layout_writer.finish();
@@ -839,7 +999,9 @@ fn run() -> Result<()> {
             && layout_drained
         {
             // Let an active transfer finish without making Quit depend indefinitely on a foreign clipboard owner.
-            *flow = if app.restoring.is_none() || std::time::Instant::now() >= deadline {
+            *flow = if (app.restoring.is_none() && !app.busy)
+                || std::time::Instant::now() >= deadline
+            {
                 ControlFlow::Exit
             } else {
                 ControlFlow::WaitUntil(deadline)

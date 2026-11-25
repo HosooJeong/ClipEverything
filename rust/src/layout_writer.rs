@@ -1,6 +1,6 @@
 //! Keep SQLite write waits out of the Win32 message loop and preserve the order
 //! of drops, auto arrange requests and viewport measurements.
-use crate::Event;
+use crate::{Event, native_ui::WindowSize};
 use anyhow::{Context, Result};
 use clip_everything::board::{self, Cell, Viewport};
 use rusqlite::{Connection, OpenFlags, params};
@@ -31,13 +31,16 @@ pub enum LayoutWrite {
     Position {
         x: i32,
         y: i32,
+        size: Option<WindowSize>,
     },
 }
 
 impl LayoutWrite {
     fn replaces(&self, previous: &Self) -> bool {
         match (self, previous) {
-            (Self::Position { .. }, Self::Position { .. }) => true,
+            (Self::Position { size, .. }, Self::Position { size: old, .. }) => {
+                size.is_some() || old.is_none()
+            }
             (Self::Measure { app, .. }, Self::Measure { app: old, .. }) => app == old,
             _ => false,
         }
@@ -58,11 +61,19 @@ impl LayoutWrite {
                 viewport,
             } => Ok(board::measure(db, &app, geometry, viewport)?
                 .then_some(Event::LayoutChanged(Ok(None)))),
-            Self::Position { x, y } => {
-                db.execute(
+            Self::Position { x, y, size } => {
+                let tx = db.transaction()?;
+                tx.execute(
                     "INSERT OR REPLACE INTO BoardWindow VALUES(1,?,?)",
                     params![x, y],
                 )?;
+                if let Some(s) = size {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO BoardWindowSize VALUES(1,?,?,?)",
+                        params![s.width, s.height, s.dpi],
+                    )?;
+                }
+                tx.commit()?;
                 Ok(None)
             }
         }

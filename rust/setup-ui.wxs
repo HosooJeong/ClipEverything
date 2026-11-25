@@ -25,7 +25,7 @@
         <Control Id="Behavior" Type="Text" X="15" Y="173" Width="330" Height="13" Text="{\LabelFont}실행 방식" />
         <Control Id="Startup" Type="CheckBox" X="15" Y="191" Width="330" Height="16" Text="Windows 로그인 시 트레이에서 자동 시작" Property="CE_STARTUP" CheckBoxValue="1" />
         <Control Id="Tray" Type="CheckBox" X="15" Y="212" Width="330" Height="16" Text="창을 닫으면 트레이에 유지" Property="CE_TRAY" CheckBoxValue="1" />
-        <Control Id="EditAfter" Type="CheckBox" X="15" Y="233" Width="330" Height="16" Text="클립 등록 직후 설명·스크린샷 편집창 열기" Property="CE_EDIT" CheckBoxValue="1" />
+        <Control Id="EditAfter" Type="CheckBox" X="15" Y="233" Width="330" Height="16" Text="클립 등록 시 이름과 미리보기 편집창 열기" Property="CE_EDIT" CheckBoxValue="1" />
         <Control Id="MenuFolder" Type="CheckBox" X="15" Y="254" Width="330" Height="16" Text="시작 메뉴에 ClipEverything 폴더 만들기" Property="CE_MENU_GROUP" CheckBoxValue="1" />
         <Control Id="DesktopLink" Type="CheckBox" X="15" Y="275" Width="330" Height="16" Text="바탕화면에 바로가기 만들기" Property="CE_DESKTOP" CheckBoxValue="1" />
         <Control Id="Divider" Type="Line" X="0" Y="306" Width="360" Height="0" />

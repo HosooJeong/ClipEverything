@@ -1,7 +1,7 @@
 mod dialogs;
 mod grid;
 use grid::{LEVELS, Pages, Shape};
-pub use grid::{MIN_HEIGHT, MIN_WIDTH};
+pub use grid::{MIN_HEIGHT, MIN_WIDTH, WindowSize};
 mod paint;
 mod popup_menu;
 mod preview;
@@ -117,7 +117,6 @@ pub struct NativeUi {
     selected: usize,
     page: i32,
     pages: Pages,
-    initial_fit: bool,
     slide: Option<grid::SidebarSlide>,
     slide_surface: slide_surface::SlideSurface,
     visible: Vec<usize>,
@@ -185,7 +184,6 @@ impl NativeUi {
                 selected: 0,
                 page: 0,
                 pages: Pages::new((4, 3), (4, 3)),
-                initial_fit: true,
                 slide: None,
                 slide_surface: Default::default(),
                 visible: Vec::new(),
@@ -536,6 +534,24 @@ impl NativeUi {
         }
         Ok(())
     }
+    pub fn fit_window(&self, work: RECT, origin: Option<POINT>, size: Option<WindowSize>) {
+        let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96) as i32;
+        Shape::new(self.options.level, dpi, self.options.sidebar_collapsed)
+            .fit_initial_window(self.hwnd, work, origin, size, dpi);
+    }
+    pub fn window_size(&self) -> Option<WindowSize> {
+        let mut client = RECT::default();
+        if unsafe { GetClientRect(self.hwnd, &mut client) } == 0 {
+            return None;
+        }
+        let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96) as i32;
+        let rail = (grid::sidebar_width(self.options.sidebar_collapsed) * dpi + 48) / 96;
+        Some(WindowSize {
+            width: client.right - rail,
+            height: client.bottom,
+            dpi,
+        })
+    }
     fn layout_frame(&mut self, sidebar_frame: bool) -> Result<()> {
         unsafe {
             self.bridge.cancel();
@@ -556,10 +572,6 @@ impl NativeUi {
                 self.font = f;
             }
             let mut shape = Shape::new(self.options.level, dpi, self.options.sidebar_collapsed);
-            if self.initial_fit {
-                self.initial_fit = false;
-                shape.fit_initial_window(self.hwnd);
-            }
             let rail = self.slide.as_ref().map_or(
                 px(grid::sidebar_width(self.options.sidebar_collapsed)),
                 |slide| slide.width,

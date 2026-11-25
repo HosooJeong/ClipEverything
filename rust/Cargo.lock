@@ -168,7 +168,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "clip-everything"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "base64",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "clip-setup-actions"
-version = "0.6.13"
+version = "0.6.14"
 dependencies = [
  "anyhow",
  "clip-everything",

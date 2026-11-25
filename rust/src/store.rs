@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use image::{DynamicImage, ImageDecoder, ImageFormat, codecs::bmp::BmpDecoder};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{fs, io::Cursor, path::Path};
@@ -41,6 +41,18 @@ pub struct Item {
 pub struct Detail {
     pub image: Option<String>,
     pub formats: Vec<String>,
+}
+
+pub enum PreviewEdit<'a> {
+    Keep,
+    Replace(&'a [u8]),
+    Clear,
+}
+
+pub struct ClipEdit<'a> {
+    pub name: &'a str,
+    pub tags: &'a str,
+    pub preview: PreviewEdit<'a>,
 }
 
 const SCHEMA: &str = "
@@ -268,10 +280,25 @@ pub fn save_near(
     source: &Source,
     pointer: Option<(i32, i32)>,
 ) -> Result<i64> {
-    ensure!(!formats.is_empty(), "Empty clipboard");
-    let hash = digest(formats);
-    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let mut id = tx
+    save_clip(db, formats, source, pointer, None)
+}
+
+pub fn register(
+    db: &mut Connection,
+    formats: &[Format],
+    source: &Source,
+    pointer: Option<(i32, i32)>,
+    edit: ClipEdit<'_>,
+) -> Result<i64> {
+    save_clip(db, formats, source, pointer, Some(edit))
+}
+
+pub fn matching_clip(db: &Connection, formats: &[Format]) -> Result<Option<i64>> {
+    Ok(find_clip(db, digest(formats))?.1)
+}
+
+fn find_clip(db: &Connection, mut hash: String) -> Result<(String, Option<i64>)> {
+    let mut id = db
         .query_row(
             "SELECT Id FROM ClipboardItems WHERE ContentHash=? LIMIT 1",
             [&hash],
@@ -280,14 +307,13 @@ pub fn save_near(
         .optional()?;
     // Older versions also assigned the plain-text key to rich clips. A plain
     // copy must never overwrite the source metadata for a different payload.
-    let mut hash = hash;
     if !hash.starts_with("v2:")
         && let Some(candidate) = id
     {
-        let stored = self::formats(&tx, candidate)?;
+        let stored = self::formats(db, candidate)?;
         if digest(&stored) != hash {
             hash = format!("v2:plain:{hash}");
-            id = tx
+            id = db
                 .query_row(
                     "SELECT Id FROM ClipboardItems WHERE ContentHash=? LIMIT 1",
                     [&hash],
@@ -296,6 +322,20 @@ pub fn save_near(
                 .optional()?;
         }
     }
+    Ok((hash, id))
+}
+
+fn save_clip(
+    db: &mut Connection,
+    formats: &[Format],
+    source: &Source,
+    pointer: Option<(i32, i32)>,
+    edit: Option<ClipEdit<'_>>,
+) -> Result<i64> {
+    ensure!(!formats.is_empty(), "Empty clipboard");
+    let hash = digest(formats);
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let (hash, id) = find_clip(&tx, hash)?;
     let now: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
         r.get(0)
     })?;
@@ -316,6 +356,42 @@ pub fn save_near(
         id
     };
     crate::board::place(&tx, &source.app, id, pointer)?;
+    if let Some(edit) = edit {
+        apply_edit(&tx, id, edit)?;
+    }
     tx.commit()?;
     Ok(id)
+}
+
+pub fn edit(db: &mut Connection, id: i64, edit: ClipEdit<'_>) -> Result<()> {
+    let tx = db.transaction()?;
+    apply_edit(&tx, id, edit)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn apply_edit(tx: &Transaction<'_>, id: i64, edit: ClipEdit<'_>) -> Result<()> {
+    ensure!(
+        edit.name.len() <= 4096 && edit.tags.len() <= 4096,
+        "Name or tags too long"
+    );
+    let changed = tx.execute(
+        "UPDATE ClipboardItems SET Name=?,Tags=? WHERE Id=?",
+        params![edit.name.trim(), edit.tags.trim(), id],
+    )?;
+    ensure!(changed == 1, "Clip no longer exists");
+    match edit.preview {
+        PreviewEdit::Keep => {}
+        PreviewEdit::Replace(bytes) => {
+            tx.execute(
+                "INSERT INTO ButtonPreviews(ItemId,Png) VALUES(?,?)
+                 ON CONFLICT(ItemId) DO UPDATE SET Png=excluded.Png, Revision=Revision+1",
+                params![id, bytes],
+            )?;
+        }
+        PreviewEdit::Clear => {
+            tx.execute("DELETE FROM ButtonPreviews WHERE ItemId=?", [id])?;
+        }
+    }
+    Ok(())
 }

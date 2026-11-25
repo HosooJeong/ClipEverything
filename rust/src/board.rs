@@ -64,7 +64,8 @@ pub fn init(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS BoardViewport(
         App TEXT PRIMARY KEY REFERENCES ButtonBoards(App) ON DELETE CASCADE,
         FirstRow INTEGER NOT NULL, FirstCol INTEGER NOT NULL, Rows INTEGER NOT NULL, Cols INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS BoardWindow(Id INTEGER PRIMARY KEY,X INTEGER,Y INTEGER);")?;
+        CREATE TABLE IF NOT EXISTS BoardWindow(Id INTEGER PRIMARY KEY,X INTEGER,Y INTEGER);
+        CREATE TABLE IF NOT EXISTS BoardWindowSize(Id INTEGER PRIMARY KEY,Width INTEGER NOT NULL,Height INTEGER NOT NULL,Dpi INTEGER NOT NULL);")?;
     if !installed {
         tx.execute_batch("INSERT INTO ButtonBoards(App,Rows,Cols) SELECT SourceApp,max(3,(count(*)+3)/4),4 FROM ClipboardItems GROUP BY SourceApp;
           INSERT INTO ButtonSlots SELECT SourceApp,Id,pos/4,pos%4 FROM

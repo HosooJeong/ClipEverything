@@ -14,6 +14,14 @@ pub const MIN_WIDTH: i32 = minimum_width(false);
 pub const MIN_HEIGHT: i32 = 12 + 4 * 44 + 36 + 12;
 pub const LEVELS: i32 = 10;
 pub const GRID_TOP: i32 = 46;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct WindowSize {
+    // Exclude the sidebar so folding it does not change the saved board width.
+    pub width: i32,
+    pub height: i32,
+    pub dpi: i32,
+}
+
 #[derive(Clone, Copy)]
 pub struct Shape {
     pub width: i32,
@@ -78,21 +86,61 @@ impl Shape {
             _ => {}
         }
     }
-    pub fn fit_initial_window(self, h: HWND) {
+    fn initial_client(self, saved: Option<WindowSize>, dpi: i32, rail: i32) -> (i32, i32) {
+        let (width, height) =
+            if let Some(s) = saved.filter(|s| s.width > 0 && s.height > 0 && s.dpi > 0) {
+                let scale = |n| {
+                    ((i64::from(n) * i64::from(dpi) + i64::from(s.dpi) / 2) / i64::from(s.dpi))
+                        .clamp(1, 1 << 20) as i32
+                };
+                let (width, height) = (scale(s.width) + rail, scale(s.height));
+                if s.dpi == dpi {
+                    (width, height)
+                } else {
+                    let (first_w, first_h) = self.content(1, 1);
+                    (
+                        snap_length(width, first_w, self.width + self.gap, self.min_width),
+                        snap_length(height, first_h, self.height + self.gap, self.min_height),
+                    )
+                }
+            } else {
+                self.content(4, 3)
+            };
+        (width.max(self.min_width), height.max(self.min_height))
+    }
+
+    pub fn fit_initial_window(
+        self,
+        h: HWND,
+        work: RECT,
+        origin: Option<POINT>,
+        size: Option<WindowSize>,
+        dpi: i32,
+    ) {
         unsafe {
             let mut client = RECT::default();
-            GetClientRect(h, &mut client);
-            if IsIconic(h) != 0 || IsZoomed(h) != 0 {
-                return;
-            }
-            let (w, height) = self.content(4, 3);
             let mut frame = RECT::default();
-            if GetWindowRect(h, &mut frame) == 0 {
+            if GetClientRect(h, &mut client) == 0 || GetWindowRect(h, &mut frame) == 0 {
                 return;
             }
-            frame.right += w.max(self.min_width) - client.right;
-            frame.bottom += height.max(self.min_height) - client.bottom;
-            position_frame(h, frame, SWP_NOCOPYBITS);
+            let (width, height) = self.initial_client(size, dpi, self.left - (8 * dpi + 48) / 96);
+            let w = width + frame.right - frame.left - client.right;
+            let hgt = height + frame.bottom - frame.top - client.bottom;
+            let top_left = origin.unwrap_or(POINT {
+                x: work.right - w - 12,
+                y: work.top + 48,
+            });
+            position_in_work_area(
+                h,
+                RECT {
+                    left: top_left.x,
+                    top: top_left.y,
+                    right: top_left.x.saturating_add(w),
+                    bottom: top_left.y.saturating_add(hgt),
+                },
+                work,
+                SWP_NOCOPYBITS,
+            );
         }
     }
 }
@@ -112,7 +160,12 @@ fn position_frame(h: HWND, frame: RECT, flags: SET_WINDOW_POS_FLAGS) {
         if GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut monitor) == 0 {
             return;
         }
-        let work = monitor.rcWork;
+        position_in_work_area(h, frame, monitor.rcWork, flags);
+    }
+}
+
+fn position_in_work_area(h: HWND, frame: RECT, work: RECT, flags: SET_WINDOW_POS_FLAGS) {
+    unsafe {
         let w = (frame.right - frame.left).clamp(1, work.right - work.left);
         let height = (frame.bottom - frame.top).clamp(1, work.bottom - work.top);
         let x = frame.left.clamp(work.left, work.right - w);
@@ -271,6 +324,26 @@ mod tests {
                     Pages::new(s.capacity(expanded.0, expanded.1), (5, 4)).count,
                     1
                 );
+            }
+        }
+    }
+    #[test]
+    fn saved_client_size_reopens_with_the_same_grid_across_sidebar_states_and_dpi() {
+        let original = Shape::new(5, 120, false);
+        let (width, height) = original.content(6, 5);
+        let rail = (SIDEBAR * 120 + 48) / 96;
+        let saved = Some(WindowSize {
+            width: width - rail,
+            height,
+            dpi: 120,
+        });
+        assert_eq!(original.initial_client(saved, 120, rail), (width, height));
+        for dpi in [96, 120, 144, 192] {
+            for collapsed in [false, true] {
+                let shape = Shape::new(5, dpi, collapsed);
+                let rail = (sidebar_width(collapsed) * dpi + 48) / 96;
+                let size = shape.initial_client(saved, dpi, rail);
+                assert_eq!(size, shape.content(6, 5));
             }
         }
     }
