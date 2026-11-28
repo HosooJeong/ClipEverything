@@ -8,6 +8,8 @@ English · [한국어](README.ko.md)
 
 ## Download
 
+**macOS beta (Apple Silicon, macOS 14+)** · [Download and try the beta](https://github.com/HosooJeong/ClipEverything/releases/tag/v0.6.14-macos-beta.1) · [Report an issue](https://github.com/HosooJeong/ClipEverything/issues/new?template=macos-beta.yml)
+
 **New to ClipEverything? Start with the MSI.** Open the downloaded file, keep the default options for a quick start, and click the finish button to open the board.
 
 | File | How to start |

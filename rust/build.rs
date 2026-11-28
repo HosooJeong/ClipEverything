@@ -54,6 +54,9 @@ fn compile_icons(out: &std::path::Path) {
     }
 }
 fn main() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
     println!("cargo:rerun-if-changed=../resources/app.ico");
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     compile_icons(&out);

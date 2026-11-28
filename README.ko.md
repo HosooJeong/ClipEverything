@@ -10,6 +10,8 @@ ClipEverything은 자주 쓰는 문구와 서식, 표, 이미지, 파일 선택�
 
 ## 일단 받아서 열어 봅시다
 
+**macOS 베타 (Apple Silicon, macOS 14 이상)** · [베타 다운로드](https://github.com/HosooJeong/ClipEverything/releases/tag/v0.6.14-macos-beta.1) · [이슈 제보](https://github.com/HosooJeong/ClipEverything/issues/new?template=macos-beta.yml)
+
 **처음이라면 MSI가 가장 간단합니다.** 아래에서 MSI를 받아 실행하고, 기본 설정 그대로 설치한 뒤 **마침**을 누르면 버튼판이 열립니다.
 
 | 다운로드 | 이렇게 쓰세요 |
